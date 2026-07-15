@@ -145,6 +145,17 @@ Every behavior statement carries one of three classifications:
 - **Implemented.** Planner and reviewer roles run read-only; the builder role
   is constrained by role instructions and the kernel's planned-path diff
   enforcement rather than an operating-system sandbox in the Claude adapter.
+- **Implemented.** Recorded per-role model routing with suggestion fallback
+  and per-invocation provenance in the Claude adapter: `agentflow models`
+  shows and records the user's role-to-model choices in `models.json` in
+  Agentflow Home, each invocation resolves `advance --model`, then the
+  `AGENTFLOW_CLAUDE_<ROLE>_MODEL` environment variable, then the recorded
+  routing, then the suggested defaults, and the resolved model is recorded on
+  the stage's `plan_ready`, `build_ready`, `review_ready`, or
+  `review_blocked` event. The fake and Codex adapters route no models and
+  record no `model` field.
+- **Target.** Capability-based model routing across providers, beyond the
+  Claude adapter's recorded per-role routing.
 - **Target.** Automatic adapter self-provisioning: Agentflow detecting a
   missing adapter and building, testing, and landing one through its own
   workflow before use. Until this exists, adapters are built through

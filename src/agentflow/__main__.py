@@ -4,7 +4,15 @@ import argparse
 import json
 from pathlib import Path
 
-from .agent_adapter import ClaudeAdapter, CodexAdapter, DeterministicFakeAdapter
+from .agent_adapter import (
+    ROLES,
+    SUGGESTED_MODELS,
+    ClaudeAdapter,
+    CodexAdapter,
+    DeterministicFakeAdapter,
+    read_model_routing,
+    record_model_routing,
+)
 from .project_setup import initialize_repository
 from .paths import agentflow_home
 from .repository_profile import create_repository_profile
@@ -53,7 +61,17 @@ def main() -> int:
         type=int,
         default=DEFAULT_CLAIM_LEASE_SECONDS,
     )
+    advance_parser.add_argument("--model")
     advance_parser.add_argument("--data-dir", type=Path)
+    models_parser = subcommands.add_parser("models")
+    models_parser.add_argument("--adapter", choices=tuple(SUGGESTED_MODELS))
+    models_parser.add_argument(
+        "--set",
+        action="append",
+        dest="set_entries",
+        metavar="role=model",
+    )
+    models_parser.add_argument("--data-dir", type=Path)
     run_parser = subcommands.add_parser("run")
     run_parser.add_argument("task", type=Path)
     run_parser.add_argument("--data-dir", type=Path)
@@ -184,14 +202,53 @@ def main() -> int:
         )
         return 0
 
+    if args.command == "models":
+        data_dir = agentflow_home(args.data_dir)
+        if args.set_entries:
+            if args.adapter is None:
+                parser.error("--set requires --adapter")
+            updates: dict[str, str] = {}
+            for entry in args.set_entries:
+                role, separator, model = entry.partition("=")
+                if not separator or not role or not model:
+                    parser.error(
+                        f"--set expects role=model, got {entry!r}"
+                    )
+                if role not in ROLES:
+                    parser.error(
+                        f"unknown role {role!r}; expected one of "
+                        + ", ".join(ROLES)
+                    )
+                updates[role] = model
+            record_model_routing(data_dir, args.adapter, updates)
+        routing = read_model_routing(data_dir)
+        print(
+            json.dumps(
+                {
+                    adapter_name: {
+                        "recorded": routing.get(adapter_name, {}),
+                        "suggested": suggested,
+                    }
+                    for adapter_name, suggested in SUGGESTED_MODELS.items()
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
     if args.command == "advance":
+        if args.model is not None and args.adapter != "claude":
+            parser.error("--model requires --adapter claude")
         adapter = None
         if args.adapter == "fake":
             if args.adapter_fixture is None:
                 parser.error("--adapter-fixture is required for the fake adapter")
             adapter = DeterministicFakeAdapter(args.adapter_fixture)
         elif args.adapter == "claude":
-            adapter = ClaudeAdapter()
+            adapter = ClaudeAdapter(
+                data_dir=agentflow_home(args.data_dir),
+                model=args.model,
+            )
         elif args.adapter == "codex":
             adapter = CodexAdapter()
         result = advance_run(

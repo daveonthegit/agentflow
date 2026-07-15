@@ -46,6 +46,26 @@ Run Evidence defaults to Agentflow Home outside the target repository. Use
 `AGENTFLOW_HOME` or `--data-dir` only when the user, CI environment, or isolated
 test requires an override.
 
+## Route models before the first adapter advance
+
+Before the first model-requiring `advance` with a given adapter, run
+`agentflow models` and inspect its recorded routing. When no routing is
+recorded for that adapter, or the model provider has changed since it was
+recorded, ask the user which model to use for each role (planner, builder,
+reviewer) while presenting the suggested defaults from the command's output,
+then record the answer:
+
+```bash
+agentflow models                                             # inspect routing
+agentflow models --adapter claude --set planner=fable --set builder=opus
+```
+
+Never silently assume a model choice. Each invocation resolves the model per
+role in this order: `advance --model` (one stage only), then the
+`AGENTFLOW_CLAUDE_<ROLE>_MODEL` environment variable, then the recorded
+`models.json` routing in Agentflow Home, then the adapter's suggested
+defaults.
+
 Advance exactly one recorded stage at a time, selecting an installed Agent
 Adapter (`claude` or `codex`) for the stages that require one:
 

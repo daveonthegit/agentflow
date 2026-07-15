@@ -37,6 +37,13 @@ def _git(*args: str, cwd: Path) -> str:
     ).stdout.rstrip("\n")
 
 
+def _model_provenance(adapter: AgentAdapter, role: str) -> dict[str, str]:
+    resolve = getattr(adapter, "resolve_model", None)
+    if resolve is None:
+        return {}
+    return {"model": resolve(role)}
+
+
 def _changed_files(workspace: Path) -> list[str]:
     status = _git("status", "--porcelain", "--untracked-files=all", cwd=workspace)
     changed: list[str] = []
@@ -120,6 +127,7 @@ def _advance_claimed_run(
             event_type="plan_ready",
             adapter=adapter.name,
             artifact=str(artifact),
+            **_model_provenance(adapter, "planner"),
         )
         return AdvancedRun(run_id=run_id, state="planned", artifact=artifact)
 
@@ -261,6 +269,7 @@ def _advance_claimed_run(
                 adapter=adapter.name,
                 artifact=str(artifact),
                 candidate_sha=candidate_sha,
+                **_model_provenance(adapter, "reviewer"),
             )
             return AdvancedRun(
                 run_id=run_id,
@@ -275,6 +284,7 @@ def _advance_claimed_run(
             adapter=adapter.name,
             artifact=str(artifact),
             candidate_sha=candidate_sha,
+            **_model_provenance(adapter, "reviewer"),
         )
         append_event(
             data_dir=data_dir,
@@ -326,6 +336,7 @@ def _advance_claimed_run(
         adapter=adapter.name,
         artifact=str(artifact),
         candidate_sha=candidate_sha,
+        **_model_provenance(adapter, "builder"),
     )
     return AdvancedRun(
         run_id=run_id,

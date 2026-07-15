@@ -13,7 +13,8 @@ agentflow init
 agentflow profile --check "<command>"
 agentflow start "<task summary>"
 agentflow run <task.json>
-agentflow advance <run-id> [--adapter claude|codex] [--claim-lease-seconds <seconds>]
+agentflow advance <run-id> [--adapter claude|codex] [--model <model>] [--claim-lease-seconds <seconds>]
+agentflow models [--adapter claude --set <role>=<model>]
 agentflow status <run-id>
 agentflow list [--state <state>]
 agentflow approve <run-id> --approved-by <human identity>
@@ -30,6 +31,22 @@ agentflow abandon <run-id> --abandoned-by <identity> [--reason <text>]
 - `advance` selects the next stage from replayed state. Planner, builder, and
   reviewer stages require an adapter. The built-to-verified transition executes
   profile checks directly without a model.
+- `advance --model` pins the model for the single stage that invocation
+  performs and is accepted only with `--adapter claude`. The Claude adapter
+  resolves each role's model in precedence order — explicit `--model`, then
+  the `AGENTFLOW_CLAUDE_PLANNER_MODEL`, `AGENTFLOW_CLAUDE_BUILDER_MODEL`, or
+  `AGENTFLOW_CLAUDE_REVIEWER_MODEL` environment variable, then the routing
+  recorded in `models.json` in Agentflow Home, then the adapter's suggested
+  defaults (`fable` for the planner, `opus` for the builder and reviewer) —
+  and passes the resolved model to the `claude` CLI as `--model`.
+- `models` honors `--data-dir` and, with no arguments, prints a sorted JSON
+  object mapping each model-routing adapter (currently `claude`) to its
+  `recorded` routing from `models.json` (an empty object when nothing is
+  recorded) and its `suggested` defaults. With `--adapter claude` and
+  repeatable `--set role=model` it validates role names against `planner`,
+  `builder`, and `reviewer`, merges the choices into `models.json`, and prints
+  the updated routing in the same shape. `models.json` stores the user's
+  recorded preference only; per-invocation provenance lives in the event log.
 - `run` imports a JSON Task Spec into the same kernel for compatibility.
 - `status` replays events in sequence and combines the result with captured
   input metadata. Its JSON includes `repository_profile_path` when a
@@ -63,6 +80,7 @@ an override so they cannot contaminate a developer's real runs.
 
 ```text
 <Agentflow Home>/
+├── models.json
 ├── runs/
 │   └── <run-id>/
 │       ├── task.json
@@ -96,6 +114,11 @@ New events contain a one-based `sequence` equal to their line number in
 | `human_approved` | `human_approved` |
 | `run_abandoned` | `abandoned` |
 
+`plan_ready`, `build_ready`, `review_ready`, and `review_blocked` carry a
+`model` field naming the resolved model whenever the invoking adapter routes
+models (currently the Claude adapter); the deterministic fake adapter records
+no `model` field. The field is provenance only — state projection is
+unchanged.
 `repository_snapshotted`, `repository_profile_captured`, `claim_acquired`,
 `claim_released`, and `claim_expired` add evidence without changing state.
 `review_ready` is immediately followed by `awaiting_human` in the current

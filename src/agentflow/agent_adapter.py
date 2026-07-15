@@ -25,6 +25,45 @@ ROLE_INSTRUCTIONS = {
     ),
 }
 
+ROLES = ("planner", "builder", "reviewer")
+
+SUGGESTED_MODELS = {
+    "claude": {"builder": "opus", "planner": "fable", "reviewer": "opus"},
+}
+
+
+def _validate_role(role: str) -> None:
+    if role not in ROLES:
+        raise ValueError(
+            f"unknown role {role}; expected one of {', '.join(ROLES)}"
+        )
+
+
+def read_model_routing(data_dir: Path) -> dict[str, dict[str, str]]:
+    routing_path = data_dir / "models.json"
+    if not routing_path.exists():
+        return {}
+    return json.loads(routing_path.read_text(encoding="utf-8"))
+
+
+def record_model_routing(
+    data_dir: Path,
+    adapter_name: str,
+    updates: dict[str, str],
+) -> dict[str, dict[str, str]]:
+    for role in updates:
+        _validate_role(role)
+    routing = read_model_routing(data_dir)
+    adapter_routing = dict(routing.get(adapter_name, {}))
+    adapter_routing.update(updates)
+    routing[adapter_name] = adapter_routing
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "models.json").write_text(
+        json.dumps(routing, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return routing
+
 
 def role_prompt(role: str, request: dict[str, Any]) -> str:
     return (
@@ -163,8 +202,32 @@ class ClaudeAdapter:
         "reviewer": _READ_ONLY_ARGUMENTS,
     }
 
-    def __init__(self, executable: str | None = None) -> None:
+    def __init__(
+        self,
+        executable: str | None = None,
+        *,
+        data_dir: Path | None = None,
+        model: str | None = None,
+    ) -> None:
         self._executable = executable or os.environ.get("AGENTFLOW_CLAUDE", "claude")
+        self._data_dir = data_dir
+        self._model = model
+
+    def resolve_model(self, role: str) -> str:
+        _validate_role(role)
+        if self._model is not None:
+            return self._model
+        environment_model = os.environ.get(
+            f"AGENTFLOW_CLAUDE_{role.upper()}_MODEL"
+        )
+        if environment_model:
+            return environment_model
+        if self._data_dir is not None:
+            recorded = read_model_routing(self._data_dir).get(self.name, {})
+            recorded_model = recorded.get(role)
+            if recorded_model:
+                return recorded_model
+        return SUGGESTED_MODELS[self.name][role]
 
     def invoke(
         self,
@@ -173,6 +236,7 @@ class ClaudeAdapter:
         request: dict[str, Any],
         workspace: Path,
     ) -> dict[str, Any]:
+        model = self.resolve_model(role)
         completed = subprocess.run(
             [
                 self._executable,
@@ -183,6 +247,8 @@ class ClaudeAdapter:
                 json.dumps(contract_schema(role), sort_keys=True),
                 "--no-session-persistence",
                 *self._ROLE_ARGUMENTS[role],
+                "--model",
+                model,
             ],
             input=role_prompt(role, request),
             cwd=workspace,
