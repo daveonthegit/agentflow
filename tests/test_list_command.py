@@ -169,6 +169,58 @@ class ListCommandTests(unittest.TestCase):
                 self.assertNotIn("worktree", entry)
                 self.assertNotIn("candidate_sha", entry)
                 self.assertNotIn("approved_sha", entry)
+                self.assertNotIn("acceptance_criteria", entry)
+                self.assertNotIn("source", entry)
+
+    def test_list_omits_source_and_criteria_even_when_status_includes_them(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            repository, data_dir, run_id = create_profiled_run(temp_path, environment)
+            started = agentflow(
+                "start",
+                "Criteria stay out of list",
+                "--acceptance-criterion",
+                "checks pass",
+                "--data-dir",
+                str(data_dir),
+                cwd=repository,
+                environment=environment,
+            )
+            self.assertEqual(started.returncode, 0, started.stderr)
+            criteria_run = json.loads(started.stdout)["run_id"]
+
+            status = agentflow(
+                "status",
+                criteria_run,
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertIn(
+                "acceptance_criteria", json.loads(status.stdout)
+            )
+
+            listed = agentflow(
+                "list",
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            entry = next(
+                item
+                for item in json.loads(listed.stdout)
+                if item["run_id"] == criteria_run
+            )
+            self.assertNotIn("acceptance_criteria", entry)
+            self.assertNotIn("source", entry)
+            self.assertNotIn("worktree", entry)
 
     def test_list_state_option_filters_to_one_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

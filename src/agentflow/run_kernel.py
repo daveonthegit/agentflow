@@ -10,9 +10,10 @@ import socket
 import subprocess
 import sys
 import time
-from typing import Callable, TextIO
+from typing import Any, Callable, TextIO
 import uuid
 
+from .contracts import validate_task_spec
 from .repository_profile import inspect_repository_profile
 
 # Run states that require external action; `follow_run` prints a final status
@@ -63,6 +64,8 @@ class RunStatus:
     repository_profile_path: str | None
     candidate_sha: str | None
     approved_sha: str | None
+    acceptance_criteria: list[str] | None = None
+    source: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -112,14 +115,30 @@ def _git(*args: str, cwd: Path) -> str:
     ).stdout.strip()
 
 
-def _write_json(path: Path, value: dict[str, str]) -> None:
+def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.write_text(
         json.dumps(value, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
 
-def start_run(*, summary: str, repository: Path, data_dir: Path) -> StartedRun:
+def start_run(
+    *,
+    summary: str,
+    repository: Path,
+    data_dir: Path,
+    acceptance_criteria: list[str] | None = None,
+    source: dict[str, str] | None = None,
+) -> StartedRun:
+    task_input: dict[str, Any] = {
+        "summary": summary,
+        "acceptance_criteria": (
+            [] if acceptance_criteria is None else acceptance_criteria
+        ),
+    }
+    if source is not None:
+        task_input["source"] = source
+    task = validate_task_spec(task_input)
     repository = Path(_git("rev-parse", "--show-toplevel", cwd=repository))
     if _git("status", "--porcelain", "--untracked-files=all", cwd=repository):
         raise ValueError("Target Repository must be clean before starting a Run")
@@ -130,7 +149,13 @@ def start_run(*, summary: str, repository: Path, data_dir: Path) -> StartedRun:
     run_dir.mkdir(parents=True)
     worktree.parent.mkdir(parents=True, exist_ok=True)
 
-    _write_json(run_dir / "task.json", {"summary": summary})
+    persisted: dict[str, Any] = {
+        "acceptance_criteria": task["acceptance_criteria"],
+        "summary": task["summary"],
+    }
+    if "source" in task:
+        persisted["source"] = task["source"]
+    _write_json(run_dir / "task.json", persisted)
     _write_json(
         run_dir / "repository.json",
         {"base_sha": base_sha, "repository": str(repository)},
@@ -249,6 +274,8 @@ def read_run_status(*, run_id: str, data_dir: Path) -> RunStatus:
         if repository_path.exists()
         else {}
     )
+    criteria = task.get("acceptance_criteria")
+    source = task.get("source")
     return RunStatus(
         run_id=run_id,
         state=state,
@@ -261,6 +288,8 @@ def read_run_status(*, run_id: str, data_dir: Path) -> RunStatus:
         repository_profile_path=repository_profile_path,
         candidate_sha=candidate_sha,
         approved_sha=approved_sha,
+        acceptance_criteria=criteria if criteria else None,
+        source=source if isinstance(source, dict) else None,
     )
 
 

@@ -28,7 +28,10 @@ agentflow rebase <run-id>
   `AGENTS.md` block without replacing existing project instructions.
 - `start` captures a Task Spec, resolves the Target Repository and base commit,
   verifies and references its target-local profile, creates one branch and
-  Workspace, records events, and returns `ready`.
+  Workspace, records events, and returns `ready`. New Runs always persist
+  `acceptance_criteria` (empty is valid). Optional `source` is omitted for
+  direct human starts unless supplied by imported task JSON. Repeatable
+  `--acceptance-criterion` flags populate criteria on `start`.
 - `profile` creates the target-owned repository map, check commands, and source
   fingerprint at `.agentflow/repository-profile.json`.
 - `advance` selects the next stage from replayed state. Planner, builder, and
@@ -88,15 +91,26 @@ agentflow rebase <run-id>
   `models.json`, and prints the updated routing in the same shape.
   `models.json` stores the user's recorded preference only; per-invocation
   provenance lives in the event log.
-- `run` imports a JSON Task Spec into the same kernel for compatibility.
+- `run` imports a JSON Task Spec into the same kernel for compatibility. It
+  validates the Task Spec (non-empty `summary`; trimmed unique non-empty
+  `acceptance_criteria`; optional `source` with exactly `provider`,
+  `work_item_id`, `captured_at` as ISO-8601 with an explicit timezone, and
+  `content_hash` as 64 lowercase hex), rejects unknown fields, and preserves
+  optional `source` and criteria. `content_hash` is an importer-supplied
+  upstream source-content reference and is never recomputed from task.json.
+  Legacy summary-only task.json files remain readable. Material upstream task
+  change requires a new Run; there is no snapshot refresh mutation.
 - `status` replays events in sequence and combines the result with captured
   input metadata. Its JSON includes `repository_profile_path` when a
   `repository_profile_captured` event supplies that relative path; runs without
-  profile evidence retain the legacy response shape.
+  profile evidence retain the legacy response shape. `source` and
+  `acceptance_criteria` appear only when present and non-empty so legacy
+  response shapes stay compatible.
 - `list` replays every Run in Agentflow Home and prints a JSON array sorted by
   each Run's first event, so ordering is deterministic across invocations. Each
   entry carries the `status` fields `run_id`, `state`, `base_sha`, `summary`,
   and `repository`, plus `candidate_sha` and `approved_sha` when present.
+  List stays concise and does not include `source` or `acceptance_criteria`.
   `--state` filters to one state; a missing or empty runs directory prints an
   empty array.
 - `approve` appends an explicit approval only when replayed state is
@@ -223,6 +237,44 @@ new candidate generation — `build_ready`, `repair_ready`, and
 pre-rebase evidence. Legacy flat names (`plan.json`, `checks.json`,
 `review.json`, `build-report.json`) remain readable when an event's `artifact`
 field points at them.
+
+## Task Spec snapshot
+
+`task.json` is an immutable Task Spec captured at Run start. **Implemented**
+fields:
+
+- `summary` — required non-empty string.
+- `acceptance_criteria` — list of trimmed unique non-empty strings; new Runs
+  always persist the field (empty is valid).
+- `source` — optional object with exactly `provider`, `work_item_id`,
+  `captured_at` (ISO-8601 with an explicit timezone), and `content_hash`
+  (exactly 64 lowercase hexadecimal characters). The hash is an importer-supplied
+  upstream source-content reference and is never recomputed from task.json.
+  Direct human `start` omits `source` unless the Task Spec was imported.
+
+Unknown Task Spec fields are rejected. Legacy summary-only `task.json` files
+remain replayable. Material upstream task change requires a new Run; there is
+no snapshot refresh mutation. The complete frozen task object is passed
+unchanged to planner, builder, and reviewer stages.
+
+## Check evidence enrichment
+
+Each individual check record inside attempt-scoped `checks-<n>.json` includes
+**Implemented** enrichment fields:
+
+- `started_at` — timezone-aware UTC ISO-8601 captured immediately before the
+  check subprocess starts.
+- `duration_ms` — non-negative integer measured with a monotonic clock.
+- `attempt` — the one-based candidate generation already used for attempt-scoped
+  artifacts; shared by every check in one stage and incremented after
+  `build_ready`, `repair_ready`, or `candidate_rebased`.
+- `environment` — a fixed allowlist only: `LANG`, `PYTHONHASHSEED`, `TZ`, plus
+  Python implementation/version and OS system/release/machine. Arbitrary process
+  environment variables and secrets are never recorded.
+
+Every check in one stage shares the same `attempt` and `environment` fingerprint
+but records its own `started_at` and `duration_ms`. Legacy `checks.json` records
+without these fields remain readable.
 
 ## Stage claims
 

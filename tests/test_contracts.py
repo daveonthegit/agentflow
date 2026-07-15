@@ -9,7 +9,22 @@ from agentflow.contracts import (
     MIN_PLAN_TEXT_LENGTH,
     validate_plan,
     validate_planned_paths,
+    validate_task_spec,
 )
+
+
+VALID_CONTENT_HASH = "a" * 64
+
+
+def valid_source(**overrides):
+    source = {
+        "provider": "github",
+        "work_item_id": "42",
+        "captured_at": "2026-07-15T12:00:00+00:00",
+        "content_hash": VALID_CONTENT_HASH,
+    }
+    source.update(overrides)
+    return source
 
 
 def valid_plan(**overrides):
@@ -123,6 +138,137 @@ class PlanContractTests(unittest.TestCase):
             valid_plan(files_to_modify=["missing-dir/new-file.txt"])
         )
         self.assertEqual(plan["files_to_modify"], ["missing-dir/new-file.txt"])
+
+
+class TaskSpecContractTests(unittest.TestCase):
+    def test_accepts_legacy_summary_only_task(self) -> None:
+        task = validate_task_spec({"summary": "Add a health endpoint"})
+        self.assertEqual(
+            task,
+            {
+                "summary": "Add a health endpoint",
+                "acceptance_criteria": [],
+            },
+        )
+        self.assertNotIn("source", task)
+
+    def test_full_task_spec_round_trip(self) -> None:
+        source = valid_source()
+        task = validate_task_spec(
+            {
+                "summary": "Add a health endpoint",
+                "acceptance_criteria": [" checks pass ", "docs updated"],
+                "source": source,
+            }
+        )
+        self.assertEqual(
+            task,
+            {
+                "summary": "Add a health endpoint",
+                "acceptance_criteria": ["checks pass", "docs updated"],
+                "source": source,
+            },
+        )
+
+    def test_rejects_empty_summary(self) -> None:
+        with self.assertRaisesRegex(ContractError, "summary"):
+            validate_task_spec({"summary": "   "})
+
+    def test_rejects_blank_and_duplicate_criteria(self) -> None:
+        with self.assertRaisesRegex(ContractError, "blank"):
+            validate_task_spec(
+                {
+                    "summary": "Add a health endpoint",
+                    "acceptance_criteria": ["ok", "  "],
+                }
+            )
+        with self.assertRaisesRegex(ContractError, "duplicates"):
+            validate_task_spec(
+                {
+                    "summary": "Add a health endpoint",
+                    "acceptance_criteria": ["same", " same "],
+                }
+            )
+
+    def test_rejects_unknown_fields(self) -> None:
+        with self.assertRaisesRegex(ContractError, "unknown fields"):
+            validate_task_spec(
+                {"summary": "Add a health endpoint", "extra": True}
+            )
+
+    def test_rejects_naive_and_invalid_captured_at(self) -> None:
+        with self.assertRaisesRegex(ContractError, "timezone"):
+            validate_task_spec(
+                {
+                    "summary": "Add a health endpoint",
+                    "source": valid_source(captured_at="2026-07-15T12:00:00"),
+                }
+            )
+        with self.assertRaisesRegex(ContractError, "ISO-8601"):
+            validate_task_spec(
+                {
+                    "summary": "Add a health endpoint",
+                    "source": valid_source(captured_at="not-a-timestamp"),
+                }
+            )
+
+    def test_accepts_z_and_offset_captured_at(self) -> None:
+        for captured_at in (
+            "2026-07-15T12:00:00Z",
+            "2026-07-15T08:00:00-04:00",
+        ):
+            task = validate_task_spec(
+                {
+                    "summary": "Add a health endpoint",
+                    "source": valid_source(captured_at=captured_at),
+                }
+            )
+            self.assertEqual(task["source"]["captured_at"], captured_at)
+
+    def test_rejects_content_hash_boundaries_without_recomputing(self) -> None:
+        with self.assertRaisesRegex(ContractError, "64 lowercase hexadecimal"):
+            validate_task_spec(
+                {
+                    "summary": "Add a health endpoint",
+                    "source": valid_source(content_hash="A" * 64),
+                }
+            )
+        with self.assertRaisesRegex(ContractError, "64 lowercase hexadecimal"):
+            validate_task_spec(
+                {
+                    "summary": "Add a health endpoint",
+                    "source": valid_source(content_hash="a" * 63),
+                }
+            )
+        with self.assertRaisesRegex(ContractError, "64 lowercase hexadecimal"):
+            validate_task_spec(
+                {
+                    "summary": "Add a health endpoint",
+                    "source": valid_source(content_hash="g" * 64),
+                }
+            )
+        # Importer-supplied hash is preserved, not recomputed from task.json.
+        supplied = "b" * 64
+        task = validate_task_spec(
+            {
+                "summary": "Add a health endpoint",
+                "source": valid_source(content_hash=supplied),
+            }
+        )
+        self.assertEqual(task["source"]["content_hash"], supplied)
+
+    def test_rejects_incomplete_source(self) -> None:
+        with self.assertRaisesRegex(ContractError, "exactly"):
+            validate_task_spec(
+                {
+                    "summary": "Add a health endpoint",
+                    "source": {
+                        "provider": "github",
+                        "work_item_id": "42",
+                        "captured_at": "2026-07-15T12:00:00Z",
+                    },
+                }
+            )
 
 
 if __name__ == "__main__":

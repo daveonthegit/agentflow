@@ -1509,6 +1509,277 @@ raise SystemExit(7)
             )
             self.assertEqual(entry["candidate_sha"], candidate_sha)
 
+    def test_planner_receives_complete_frozen_task_object(self) -> None:
+        from agentflow.workflow import advance_run
+
+        class CapturingAdapter:
+            name = "fake"
+
+            def __init__(self) -> None:
+                self.requests: list[dict] = []
+
+            def invoke(self, *, role, request, workspace, transcript_path=None):
+                self.requests.append(request)
+                return {
+                    "files_to_modify": ["README.md"],
+                    "risks": [],
+                    "steps": [
+                        {
+                            "description": "Document the health endpoint",
+                            "id": "P1",
+                            "verification": "The authoritative checks pass",
+                        }
+                    ],
+                    "summary": "Add a health endpoint",
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            _, data_dir, run_id = create_profiled_run(temp_path, environment)
+            source = {
+                "provider": "github",
+                "work_item_id": "11",
+                "captured_at": "2026-07-15T12:00:00+00:00",
+                "content_hash": "e" * 64,
+            }
+            task = {
+                "acceptance_criteria": ["checks pass"],
+                "source": source,
+                "summary": "Add a health endpoint",
+            }
+            (data_dir / "runs" / run_id / "task.json").write_text(
+                json.dumps(task, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            adapter = CapturingAdapter()
+            planned = advance_run(
+                run_id=run_id,
+                data_dir=data_dir,
+                adapter=adapter,
+            )
+            self.assertEqual(planned.state, "planned")
+            self.assertEqual(adapter.requests[0]["task"], task)
+
+    def test_checks_record_enriched_evidence_with_injected_seams(self) -> None:
+        from datetime import datetime, timezone
+        from unittest.mock import MagicMock
+
+        from agentflow.workflow import (
+            CHECK_ENV_ALLOWLIST,
+            _run_profile_checks,
+            advance_run,
+            default_check_environment_fingerprint,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            data_dir, run_id = create_built_run(temp_path, environment)
+            run_dir = data_dir / "runs" / run_id
+
+            ticks = iter(
+                [datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)]
+            )
+            monos = iter([100.0, 100.005])
+            secret_env = {
+                "LANG": "should-be-overwritten",
+                "PYTHONHASHSEED": "should-be-overwritten",
+                "TZ": "should-be-overwritten",
+                "AWS_SECRET_ACCESS_KEY": "super-secret",
+                "TOKEN": "nope",
+            }
+
+            result = advance_run(
+                run_id=run_id,
+                data_dir=data_dir,
+                adapter=None,
+                clock=lambda: next(ticks),
+                monotonic=lambda: next(monos),
+                environment_fingerprint=lambda: default_check_environment_fingerprint(
+                    environ=secret_env
+                ),
+            )
+            self.assertEqual(result.state, "verified")
+            report = json.loads((run_dir / "checks-1.json").read_text(encoding="utf-8"))
+            check = report["checks"][0]
+            self.assertEqual(check["attempt"], 1)
+            self.assertEqual(check["duration_ms"], 5)
+            self.assertEqual(check["started_at"], "2026-07-15T12:00:00+00:00")
+            self.assertEqual(check["environment"]["LANG"], "C.UTF-8")
+            self.assertEqual(check["environment"]["PYTHONHASHSEED"], "0")
+            self.assertEqual(check["environment"]["TZ"], "UTC")
+            self.assertEqual(
+                set(CHECK_ENV_ALLOWLIST)
+                | {
+                    "python_implementation",
+                    "python_version",
+                    "os_system",
+                    "os_release",
+                    "machine",
+                },
+                set(check["environment"]),
+            )
+            self.assertNotIn("AWS_SECRET_ACCESS_KEY", check["environment"])
+            self.assertNotIn("TOKEN", check["environment"])
+
+            # Multi-check stage: shared attempt/environment, distinct times.
+            completed = MagicMock(
+                returncode=0, stdout="ok", stderr=""
+            )
+            calls = {"n": 0}
+            clock_ticks = iter(
+                [
+                    datetime(2026, 7, 15, 13, 0, 0, tzinfo=timezone.utc),
+                    datetime(2026, 7, 15, 13, 0, 2, tzinfo=timezone.utc),
+                ]
+            )
+            mono_ticks = iter([10.0, 10.004, 20.0, 20.012])
+
+            def run_command(*args, **kwargs):
+                calls["n"] += 1
+                return completed
+
+            fingerprint = {
+                "LANG": "C.UTF-8",
+                "PYTHONHASHSEED": "0",
+                "TZ": "UTC",
+                "python_implementation": "CPython",
+                "python_version": "3.12.0",
+                "os_system": "Darwin",
+                "os_release": "25.0",
+                "machine": "arm64",
+            }
+            checks, passed = _run_profile_checks(
+                commands=[["echo", "a"], ["echo", "b"]],
+                workspace=temp_path,
+                attempt=3,
+                environment={"LANG": "C.UTF-8"},
+                environment_fingerprint=fingerprint,
+                clock=lambda: next(clock_ticks),
+                monotonic=lambda: next(mono_ticks),
+                run_command=run_command,
+            )
+            self.assertTrue(passed)
+            self.assertEqual(calls["n"], 2)
+            self.assertEqual(checks[0]["attempt"], 3)
+            self.assertEqual(checks[1]["attempt"], 3)
+            self.assertEqual(checks[0]["environment"], fingerprint)
+            self.assertEqual(checks[1]["environment"], fingerprint)
+            self.assertEqual(checks[0]["started_at"], "2026-07-15T13:00:00+00:00")
+            self.assertEqual(checks[1]["started_at"], "2026-07-15T13:00:02+00:00")
+            self.assertEqual(checks[0]["duration_ms"], 4)
+            self.assertEqual(checks[1]["duration_ms"], 12)
+
+    def test_check_attempt_increments_across_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            data_dir, run_id = create_verified_run(temp_path, environment)
+            first_checks = json.loads(
+                (data_dir / "runs" / run_id / "checks-1.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(first_checks["checks"][0]["attempt"], 1)
+
+            fixture_path = temp_path / "review-fixture.json"
+            fixture_path.write_text(
+                json.dumps(
+                    {
+                        "reviewer": {
+                            "disposition": "changes_requested",
+                            "findings": [
+                                {
+                                    "file": "README.md",
+                                    "message": "Needs a tweak",
+                                    "severity": "major",
+                                }
+                            ],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            blocked = agentflow(
+                "advance",
+                run_id,
+                "--adapter",
+                "fake",
+                "--adapter-fixture",
+                str(fixture_path),
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(blocked.returncode, 0, blocked.stderr)
+            self.assertEqual(json.loads(blocked.stdout)["state"], "changes_requested")
+
+            repair_fixture = temp_path / "repair-fixture.json"
+            repair_fixture.write_text(
+                json.dumps(
+                    {
+                        "builder": {
+                            "output": {
+                                "commands_run": [],
+                                "files_changed": ["README.md"],
+                                "steps_completed": ["P1"],
+                                "unresolved_issues": [],
+                            },
+                            "writes": {
+                                "README.md": "# Target\n\nRepaired.\n",
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            repaired = agentflow(
+                "advance",
+                run_id,
+                "--adapter",
+                "fake",
+                "--adapter-fixture",
+                str(repair_fixture),
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(repaired.returncode, 0, repaired.stderr)
+            self.assertEqual(json.loads(repaired.stdout)["state"], "built")
+            rechecked = agentflow(
+                "advance",
+                run_id,
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(rechecked.returncode, 0, rechecked.stderr)
+            second_checks = json.loads(
+                (data_dir / "runs" / run_id / "checks-2.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(second_checks["checks"][0]["attempt"], 2)
+            self.assertEqual(first_checks["checks"][0]["attempt"], 1)
+
+    def test_candidate_generation_increments_after_rebase(self) -> None:
+        from agentflow.workflow import _candidate_generation
+
+        self.assertEqual(
+            _candidate_generation(
+                [
+                    {"type": "build_ready"},
+                    {"type": "checks_passed"},
+                    {"type": "candidate_rebased"},
+                ]
+            ),
+            2,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ from .agent_adapter import (
     read_model_routing,
     record_model_routing,
 )
+from .contracts import validate_task_spec
 from .project_setup import initialize_repository
 from .paths import agentflow_home
 from .repository_profile import create_repository_profile
@@ -40,6 +41,12 @@ def main() -> int:
     profile_parser.add_argument("--check", action="append", required=True)
     start_parser = subcommands.add_parser("start")
     start_parser.add_argument("summary")
+    start_parser.add_argument(
+        "--acceptance-criterion",
+        action="append",
+        default=[],
+        dest="acceptance_criteria",
+    )
     start_parser.add_argument("--data-dir", type=Path)
     status_parser = subcommands.add_parser("status")
     status_parser.add_argument("run_id")
@@ -124,6 +131,7 @@ def main() -> int:
     if args.command == "start":
         result = start_run(
             summary=args.summary,
+            acceptance_criteria=args.acceptance_criteria,
             repository=Path.cwd(),
             data_dir=agentflow_home(args.data_dir),
         )
@@ -158,6 +166,10 @@ def main() -> int:
             response["approved_sha"] = result.approved_sha
         if result.repository_profile_path is not None:
             response["repository_profile_path"] = result.repository_profile_path
+        if result.acceptance_criteria is not None:
+            response["acceptance_criteria"] = result.acceptance_criteria
+        if result.source is not None:
+            response["source"] = result.source
         print(json.dumps(response, sort_keys=True))
         return 0
 
@@ -341,9 +353,11 @@ def main() -> int:
         print(json.dumps(response, sort_keys=True))
         return 0
 
-    task = json.loads(args.task.read_text(encoding="utf-8"))
+    task = validate_task_spec(json.loads(args.task.read_text(encoding="utf-8")))
     result = start_run(
         summary=task["summary"],
+        acceptance_criteria=task["acceptance_criteria"],
+        source=task.get("source"),
         repository=Path.cwd(),
         data_dir=agentflow_home(args.data_dir),
     )

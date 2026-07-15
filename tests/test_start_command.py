@@ -96,7 +96,10 @@ class StartCommandTests(unittest.TestCase):
             worktree = Path(response["worktree"])
             self.assertEqual(
                 json.loads((run_dir / "task.json").read_text(encoding="utf-8")),
-                {"summary": "Add a health endpoint"},
+                {
+                    "acceptance_criteria": [],
+                    "summary": "Add a health endpoint",
+                },
             )
             self.assertEqual(
                 json.loads(
@@ -109,6 +112,62 @@ class StartCommandTests(unittest.TestCase):
             )
             self.assertTrue(worktree.is_dir())
             self.assertEqual(git("rev-parse", "HEAD", cwd=worktree), base_sha)
+
+    def test_start_persists_repeatable_acceptance_criteria(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            repository = temp_path / "target"
+            data_dir = temp_path / "agentflow-home"
+            repository.mkdir()
+            git("init", cwd=repository)
+            git("config", "user.email", "agentflow@example.test", cwd=repository)
+            git("config", "user.name", "Agentflow Test", cwd=repository)
+            (repository / "README.md").write_text("# Target\n", encoding="utf-8")
+            git("add", "README.md", cwd=repository)
+            git("commit", "-m", "Initial commit", cwd=repository)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "agentflow",
+                    "start",
+                    "Add a health endpoint",
+                    "--acceptance-criterion",
+                    "checks pass",
+                    "--acceptance-criterion",
+                    "docs updated",
+                    "--data-dir",
+                    str(data_dir),
+                ],
+                cwd=repository,
+                env={**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run_id = json.loads(result.stdout)["run_id"]
+            self.assertEqual(
+                json.loads(
+                    (data_dir / "runs" / run_id / "task.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                {
+                    "acceptance_criteria": ["checks pass", "docs updated"],
+                    "summary": "Add a health endpoint",
+                },
+            )
+            self.assertNotIn(
+                "source",
+                json.loads(
+                    (data_dir / "runs" / run_id / "task.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+            )
 
 
 if __name__ == "__main__":

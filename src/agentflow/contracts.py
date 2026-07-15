@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path, PurePosixPath
+import re
 from typing import Any
 
 
@@ -9,6 +11,95 @@ class ContractError(ValueError):
 
 
 MIN_PLAN_TEXT_LENGTH = 20
+_CONTENT_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_TASK_SOURCE_FIELDS = ("provider", "work_item_id", "captured_at", "content_hash")
+
+
+def _require_aware_iso8601(value: str, label: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ContractError(f"{label} must be a non-empty ISO-8601 timestamp")
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as error:
+        raise ContractError(
+            f"{label} must be a valid ISO-8601 timestamp with an explicit timezone"
+        ) from error
+    if parsed.tzinfo is None:
+        raise ContractError(f"{label} must include an explicit timezone")
+
+
+def validate_task_source(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ContractError("task source must be an object")
+    if set(value) != set(_TASK_SOURCE_FIELDS):
+        raise ContractError(
+            "task source fields must be exactly "
+            f"{sorted(_TASK_SOURCE_FIELDS)}"
+        )
+    for field in _TASK_SOURCE_FIELDS:
+        if not isinstance(value[field], str) or not value[field].strip():
+            raise ContractError(f"task source {field} must be a non-empty string")
+    _require_aware_iso8601(value["captured_at"], "task source captured_at")
+    if not _CONTENT_HASH_PATTERN.fullmatch(value["content_hash"]):
+        raise ContractError(
+            "task source content_hash must be exactly 64 lowercase hexadecimal characters"
+        )
+    return {
+        "provider": value["provider"],
+        "work_item_id": value["work_item_id"],
+        "captured_at": value["captured_at"],
+        "content_hash": value["content_hash"],
+    }
+
+
+def validate_task_spec(value: Any) -> dict[str, Any]:
+    """Validate a Task Spec, including legacy summary-only objects.
+
+    New Runs always persist ``acceptance_criteria`` (empty allowed). ``source``
+    is optional and omitted unless supplied. Unknown fields are rejected.
+    ``content_hash`` is an importer-supplied upstream reference and is never
+    recomputed from task.json.
+    """
+    if not isinstance(value, dict):
+        raise ContractError("task must be an object")
+    allowed = {"summary", "acceptance_criteria", "source"}
+    unknown = set(value) - allowed
+    if unknown:
+        raise ContractError(
+            f"task contains unknown fields: {sorted(unknown)}"
+        )
+    if "summary" not in value:
+        raise ContractError("task summary is required")
+    if not isinstance(value["summary"], str) or not value["summary"].strip():
+        raise ContractError("task summary must be a non-empty string")
+    criteria_raw = value.get("acceptance_criteria", [])
+    if not isinstance(criteria_raw, list):
+        raise ContractError("task acceptance_criteria must be a list of strings")
+    criteria: list[str] = []
+    seen: set[str] = set()
+    for item in criteria_raw:
+        if not isinstance(item, str):
+            raise ContractError("task acceptance_criteria must be a list of strings")
+        trimmed = item.strip()
+        if not trimmed:
+            raise ContractError(
+                "task acceptance_criteria must not contain blank strings"
+            )
+        if trimmed in seen:
+            raise ContractError(
+                "task acceptance_criteria must not contain duplicates"
+            )
+        seen.add(trimmed)
+        criteria.append(trimmed)
+    task: dict[str, Any] = {
+        "summary": value["summary"].strip(),
+        "acceptance_criteria": criteria,
+    }
+    if "source" in value:
+        task["source"] = validate_task_source(value["source"])
+    return task
+
 
 
 def contract_schema(role: str) -> dict[str, Any]:

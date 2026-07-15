@@ -49,6 +49,19 @@ record and verify their outputs.
 - Bounded repair transitions out of `changes_requested` and explicit plan and
   human rejection transitions, preserving all prior attempts as evidence.
 
+## Completed: task snapshot extension and check-evidence enrichment
+
+- Optional Task Spec `source` (`provider`, `work_item_id`, `captured_at`,
+  importer-supplied `content_hash`) and `acceptance_criteria`, with validation
+  that rejects unknown fields while keeping legacy summary-only snapshots
+  replayable.
+- `start --acceptance-criterion` and `run task.json` preserve criteria and
+  optional source; new Runs always store `acceptance_criteria` (empty allowed).
+- `status` exposes source and non-empty criteria only; `list` stays concise.
+- No snapshot refresh: material upstream task change requires a new Run.
+- Check records enriched with `started_at`, `duration_ms`, shared per-stage
+  `attempt`, and an allowlisted environment fingerprint only.
+
 ## Later: adversarial verification
 
 - Tester Agent Role that may modify tests but not production code.

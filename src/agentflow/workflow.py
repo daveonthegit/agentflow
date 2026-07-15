@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import subprocess
+import time
+from typing import Callable, Mapping
 
 from .agent_adapter import AgentAdapter
 from .contracts import (
@@ -26,6 +30,8 @@ from .run_kernel import (
 # Bounded repairs after the initial build: advance from changes_requested may
 # invoke the builder at most this many times before repair_exhausted.
 MAX_REPAIR_ATTEMPTS = 2
+
+CHECK_ENV_ALLOWLIST = ("LANG", "PYTHONHASHSEED", "TZ")
 
 
 @dataclass(frozen=True)
@@ -130,12 +136,81 @@ def _enforce_builder_report(
     return changed_files
 
 
+
+def default_check_environment_fingerprint(
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Capture the allowlisted check-environment fingerprint.
+
+    Never records arbitrary process environment variables or secrets.
+    """
+    env = os.environ if environ is None else environ
+    fingerprint = {key: env.get(key, "") for key in CHECK_ENV_ALLOWLIST}
+    fingerprint.update(
+        {
+            "python_implementation": platform.python_implementation(),
+            "python_version": platform.python_version(),
+            "os_system": platform.system(),
+            "os_release": platform.release(),
+            "machine": platform.machine(),
+        }
+    )
+    return fingerprint
+
+
+def _run_profile_checks(
+    *,
+    commands: list,
+    workspace: Path,
+    attempt: int,
+    environment: dict[str, str],
+    environment_fingerprint: dict[str, str],
+    clock: Callable[[], datetime],
+    monotonic: Callable[[], float],
+    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> tuple[list[dict], bool]:
+    checks: list[dict] = []
+    all_passed = True
+    for command in commands:
+        started_at = clock()
+        started_mono = monotonic()
+        completed = run_command(
+            command,
+            cwd=workspace,
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=1800,
+            check=False,
+        )
+        duration_ms = max(0, int(round((monotonic() - started_mono) * 1000)))
+        checks.append(
+            {
+                "attempt": attempt,
+                "command": command,
+                "duration_ms": duration_ms,
+                "environment": environment_fingerprint,
+                "returncode": completed.returncode,
+                "started_at": started_at.isoformat(),
+                "stderr": completed.stderr,
+                "stdout": completed.stdout,
+            }
+        )
+        if completed.returncode != 0:
+            all_passed = False
+    return checks, all_passed
+
+
 def advance_run(
     *,
     run_id: str,
     data_dir: Path,
     adapter: AgentAdapter | None,
     claim_lease_seconds: int = DEFAULT_CLAIM_LEASE_SECONDS,
+    clock: Callable[[], datetime] | None = None,
+    monotonic: Callable[[], float] | None = None,
+    environment_fingerprint: Callable[[], dict[str, str]] | None = None,
 ) -> AdvancedRun:
     holder = default_claim_holder()
     acquire_claim(
@@ -149,6 +224,9 @@ def advance_run(
             run_id=run_id,
             data_dir=data_dir,
             adapter=adapter,
+            clock=clock,
+            monotonic=monotonic,
+            environment_fingerprint=environment_fingerprint,
         )
     finally:
         release_claim(data_dir=data_dir, run_id=run_id, holder=holder)
@@ -159,7 +237,17 @@ def _advance_claimed_run(
     run_id: str,
     data_dir: Path,
     adapter: AgentAdapter | None,
+    clock: Callable[[], datetime] | None = None,
+    monotonic: Callable[[], float] | None = None,
+    environment_fingerprint: Callable[[], dict[str, str]] | None = None,
 ) -> AdvancedRun:
+    if clock is None:
+        clock = lambda: datetime.now(timezone.utc)
+    if monotonic is None:
+        monotonic = time.monotonic
+    if environment_fingerprint is None:
+        environment_fingerprint = default_check_environment_fingerprint
+
     status = read_run_status(run_id=run_id, data_dir=data_dir)
     if status.state not in {
         "ready",
@@ -223,40 +311,34 @@ def _advance_claimed_run(
             raise ValueError("Workspace HEAD no longer matches the candidate SHA")
         if _git("status", "--porcelain", "--untracked-files=all", cwd=workspace):
             raise ValueError("Workspace is not clean at the candidate SHA")
-        checks = []
-        all_passed = True
-        environment = {
+        check_env = {
             **os.environ,
             "LANG": "C.UTF-8",
             "PYTHONHASHSEED": "0",
             "TZ": "UTC",
         }
-        for command in profile["checks"]:
-            completed = subprocess.run(
-                command,
-                cwd=workspace,
-                env=environment,
-                text=True,
-                capture_output=True,
-                timeout=1800,
-                check=False,
-            )
-            checks.append(
-                {
-                    "command": command,
-                    "returncode": completed.returncode,
-                    "stderr": completed.stderr,
-                    "stdout": completed.stdout,
-                }
-            )
-            if completed.returncode != 0:
-                all_passed = False
+        attempt = _candidate_generation(events)
+        fingerprint = {
+            **environment_fingerprint(),
+            "LANG": check_env["LANG"],
+            "PYTHONHASHSEED": check_env["PYTHONHASHSEED"],
+            "TZ": check_env["TZ"],
+        }
+        checks, all_passed = _run_profile_checks(
+            commands=profile["checks"],
+            workspace=workspace,
+            attempt=attempt,
+            environment=check_env,
+            environment_fingerprint=fingerprint,
+            clock=clock,
+            monotonic=monotonic,
+        )
         workspace_clean = not _git(
             "status", "--porcelain", "--untracked-files=all", cwd=workspace
         )
         if not workspace_clean:
             all_passed = False
-        generation = _candidate_generation(events)
+        generation = attempt
         artifact = run_dir / f"checks-{generation}.json"
         artifact.write_text(
             json.dumps(

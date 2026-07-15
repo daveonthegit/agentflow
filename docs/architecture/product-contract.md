@@ -29,7 +29,17 @@ Every behavior statement carries one of three classifications:
 - **Implemented.** A Run captures one immutable Task Spec and one exact base
   commit, starts only from a clean Target Repository checkout, and proceeds
   through planner, builder, checks, and reviewer stages driven by replayed
-  state. `advance` performs one stage per invocation.
+  state. `advance` performs one stage per invocation. The Task Spec may include
+  optional `source` (`provider`, `work_item_id`, `captured_at` with an explicit
+  timezone, and importer-supplied `content_hash`) and `acceptance_criteria`
+  (trimmed unique non-empty strings). New Runs always store
+  `acceptance_criteria` (empty is valid); `source` is omitted for direct human
+  starts unless supplied by imported task JSON. Unknown Task Spec fields are
+  rejected. Legacy summary-only task snapshots remain replayable. Material
+  upstream task change requires a new Run — there is no snapshot refresh.
+  `status` exposes `source` and `acceptance_criteria` only when present and
+  non-empty; `list` stays concise without those fields. The complete frozen
+  task object is passed to planner, builder, and reviewer.
 - **Implemented.** Planner, builder, and reviewer outputs must satisfy strict
   versioned role contracts; the builder's authoritative Git diff must be a
   subset of planned paths and must equal its reported file list.
@@ -86,7 +96,14 @@ Every behavior statement carries one of three classifications:
 - **Implemented.** Authoritative checks execute outside model reasoning
   against the exact candidate SHA, must leave the Workspace clean, and their
   raw results become Run Evidence. No agent report can override command exit
-  status or recorded evidence.
+  status or recorded evidence. Each individual check record includes
+  `started_at` (UTC ISO-8601 immediately before subprocess execution),
+  `duration_ms` (non-negative via monotonic clock), `attempt` (one-based
+  candidate generation, shared per stage including after repair and rebase),
+  and an allowlisted environment fingerprint only (`LANG`, `PYTHONHASHSEED`,
+  `TZ`, Python implementation/version, OS system/release, machine) with no
+  arbitrary environment secrets. Legacy check records without these fields
+  remain readable.
 - **Target.** Evidence-driven improvement: Improvement Proposals generated
   from repeated Run Evidence, evaluated against fixtures, and gated by an
   Adoption Gate.
