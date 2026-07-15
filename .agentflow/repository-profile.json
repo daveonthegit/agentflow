@@ -81,7 +81,9 @@
       "docs/agents/domain.md",
       "docs/agents/issue-tracker.md",
       "docs/agents/triage-labels.md",
+      "docs/architecture/product-contract.md",
       "docs/architecture/run-kernel.md",
+      "docs/decisions/agentflow-factory.md",
       "docs/development/dogfooding.md",
       "docs/roadmap.md",
       "skills/agentflow/SKILL.md"
@@ -106,5 +108,5 @@
     ]
   },
   "schema_version": 1,
-  "source_fingerprint": "819d2db998de286de9ba5bb97ef9bc53fd015378190897f7aafe3929ef1e3e10"
+  "source_fingerprint": "b6bed00467600d6b75f956ab3aa6a1cee861e3e9ba9037091ad003303ac82c54"
 }
