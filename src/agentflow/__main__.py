@@ -10,7 +10,9 @@ from .paths import agentflow_home
 from .repository_profile import create_repository_profile
 from .run_kernel import (
     DEFAULT_CLAIM_LEASE_SECONDS,
+    abandon_run,
     approve_run,
+    list_runs,
     read_run_status,
     start_run,
 )
@@ -30,6 +32,14 @@ def main() -> int:
     status_parser = subcommands.add_parser("status")
     status_parser.add_argument("run_id")
     status_parser.add_argument("--data-dir", type=Path)
+    list_parser = subcommands.add_parser("list")
+    list_parser.add_argument("--state")
+    list_parser.add_argument("--data-dir", type=Path)
+    abandon_parser = subcommands.add_parser("abandon")
+    abandon_parser.add_argument("run_id")
+    abandon_parser.add_argument("--abandoned-by", required=True)
+    abandon_parser.add_argument("--reason")
+    abandon_parser.add_argument("--data-dir", type=Path)
     approve_parser = subcommands.add_parser("approve")
     approve_parser.add_argument("run_id")
     approve_parser.add_argument("--approved-by", required=True)
@@ -113,6 +123,45 @@ def main() -> int:
             response["approved_sha"] = result.approved_sha
         if result.repository_profile_path is not None:
             response["repository_profile_path"] = result.repository_profile_path
+        print(json.dumps(response, sort_keys=True))
+        return 0
+
+    if args.command == "list":
+        results = list_runs(
+            data_dir=agentflow_home(args.data_dir),
+            state=args.state,
+        )
+        entries = []
+        for result in results:
+            entry = {
+                "base_sha": result.base_sha,
+                "repository": result.repository,
+                "run_id": result.run_id,
+                "state": result.state,
+                "summary": result.summary,
+            }
+            if result.candidate_sha is not None:
+                entry["candidate_sha"] = result.candidate_sha
+            if result.approved_sha is not None:
+                entry["approved_sha"] = result.approved_sha
+            entries.append(entry)
+        print(json.dumps(entries, sort_keys=True))
+        return 0
+
+    if args.command == "abandon":
+        result = abandon_run(
+            run_id=args.run_id,
+            abandoned_by=args.abandoned_by,
+            reason=args.reason,
+            data_dir=agentflow_home(args.data_dir),
+        )
+        response = {
+            "abandoned_by": result.abandoned_by,
+            "run_id": result.run_id,
+            "state": result.state,
+        }
+        if result.reason is not None:
+            response["reason"] = result.reason
         print(json.dumps(response, sort_keys=True))
         return 0
 

@@ -35,9 +35,20 @@ Every behavior statement carries one of three classifications:
   subset of planned paths and must equal its reported file list.
 - **Implemented.** A fresh process can replay a Run's events and continue from
   the recorded state.
+- **Implemented.** Runs are enumerable: `list` projects every Run in Agentflow
+  Home from replayed events, deterministically ordered by each Run's first
+  event, with an optional state filter.
+- **Implemented.** Explicit abandonment: `abandon` acquires the Run's stage
+  claim, then appends a terminal `run_abandoned` event carrying the abandoning
+  identity and an optional reason. An abandoned Run can never advance and can
+  never be approved, and abandoning an already-abandoned or `human_approved`
+  Run fails. Abandonment does not remove the Run's Workspace or worktree.
 - **Target.** Explicit plan approval, a tester role, bounded builder-fix retry
   loops, a constrained Merge Agent, and Post-Merge Verification. Merge and
   deployment remain manual after approval until these exist.
+- **Target.** Bounded repair transitions out of `changes_requested`, explicit
+  plan and human rejection transitions, reconciliation, and Workspace cleanup
+  after abandonment.
 
 ## Evidence
 

@@ -15,7 +15,9 @@ agentflow start "<task summary>"
 agentflow run <task.json>
 agentflow advance <run-id> [--adapter claude|codex] [--claim-lease-seconds <seconds>]
 agentflow status <run-id>
+agentflow list [--state <state>]
 agentflow approve <run-id> --approved-by <human identity>
+agentflow abandon <run-id> --abandoned-by <identity> [--reason <text>]
 ```
 
 - `init` installs the canonical project-local Agentflow skill and a managed
@@ -33,8 +35,19 @@ agentflow approve <run-id> --approved-by <human identity>
   input metadata. Its JSON includes `repository_profile_path` when a
   `repository_profile_captured` event supplies that relative path; runs without
   profile evidence retain the legacy response shape.
+- `list` replays every Run in Agentflow Home and prints a JSON array sorted by
+  each Run's first event, so ordering is deterministic across invocations. Each
+  entry carries the `status` fields `run_id`, `state`, `base_sha`, `summary`,
+  and `repository`, plus `candidate_sha` and `approved_sha` when present.
+  `--state` filters to one state; a missing or empty runs directory prints an
+  empty array.
 - `approve` appends an explicit approval only when replayed state is
   `awaiting_human`. Conversation text is not approval evidence.
+- `abandon` acquires the Run's stage claim before appending the terminal
+  `run_abandoned` event, so a Run actively claimed by a live process cannot be
+  abandoned out from under it. The event records the required `--abandoned-by`
+  identity and the optional `--reason`. Abandoning an already-abandoned or
+  `human_approved` Run fails.
 
 ## Agentflow Home
 
@@ -81,12 +94,14 @@ New events contain a one-based `sequence` equal to their line number in
 | `review_ready` | `reviewed` |
 | `awaiting_human` | `awaiting_human` |
 | `human_approved` | `human_approved` |
+| `run_abandoned` | `abandoned` |
 
 `repository_snapshotted`, `repository_profile_captured`, `claim_acquired`,
 `claim_released`, and `claim_expired` add evidence without changing state.
 `review_ready` is immediately followed by `awaiting_human` in the current
-workflow. Legacy events without sequence numbers remain readable, but any
-sequence number that is present must match its line position.
+workflow. `abandoned` is terminal: a Run can never advance and can never be
+approved from it. Legacy events without sequence numbers remain readable, but
+any sequence number that is present must match its line position.
 The Repository Profile path reported by `status` is replayed from
 `repository_profile_captured`, rather than rediscovered from the current Target
 Repository.
@@ -170,6 +185,7 @@ the only claim authority: no lock file or second store of claim state exists.
   its builder role relies on role instructions and the kernel's planned-path
   diff enforcement rather than an operating-system sandbox.
 - No tester, bounded builder-fix loop, merger, or deployment adapter exists.
-- Worktree cleanup and abandoned-run recovery are not implemented.
+- Worktree and Workspace cleanup is not implemented: `abandon` records the
+  terminal state but leaves the Run's Workspace and branch on disk.
 - `advance` performs one stage per invocation; explicit plan approval and
   configurable role policies are not implemented yet.

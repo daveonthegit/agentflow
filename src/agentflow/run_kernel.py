@@ -46,6 +46,14 @@ class Approval:
     approved_sha: str
 
 
+@dataclass(frozen=True)
+class Abandonment:
+    run_id: str
+    state: str
+    abandoned_by: str
+    reason: str | None
+
+
 def _git(*args: str, cwd: Path) -> str:
     return subprocess.run(
         ["git", *args],
@@ -153,6 +161,7 @@ def read_run_status(*, run_id: str, data_dir: Path) -> RunStatus:
         "review_blocked": "changes_requested",
         "awaiting_human": "awaiting_human",
         "human_approved": "human_approved",
+        "run_abandoned": "abandoned",
     }
     for line_number, line in enumerate(
         (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines(),
@@ -196,6 +205,28 @@ def read_run_status(*, run_id: str, data_dir: Path) -> RunStatus:
     )
 
 
+def list_runs(*, data_dir: Path, state: str | None = None) -> list[RunStatus]:
+    runs_dir = data_dir / "runs"
+    if not runs_dir.is_dir():
+        return []
+    keyed: list[tuple[str, RunStatus]] = []
+    for run_dir in runs_dir.iterdir():
+        events_path = run_dir / "events.jsonl"
+        if not events_path.is_file():
+            continue
+        lines = events_path.read_text(encoding="utf-8").splitlines()
+        if not lines:
+            continue
+        status = read_run_status(run_id=run_dir.name, data_dir=data_dir)
+        keyed.append((lines[0], status))
+    keyed.sort(key=lambda pair: pair[0])
+    return [
+        status
+        for _, status in keyed
+        if state is None or status.state == state
+    ]
+
+
 def approve_run(*, run_id: str, approved_by: str, data_dir: Path) -> Approval:
     status = read_run_status(run_id=run_id, data_dir=data_dir)
     if status.state != "awaiting_human":
@@ -224,6 +255,40 @@ def approve_run(*, run_id: str, approved_by: str, data_dir: Path) -> Approval:
         approved_by=approved_by,
         approved_sha=status.candidate_sha,
     )
+
+
+def abandon_run(
+    *,
+    run_id: str,
+    abandoned_by: str,
+    reason: str | None = None,
+    data_dir: Path,
+) -> Abandonment:
+    holder = default_claim_holder()
+    acquire_claim(data_dir=data_dir, run_id=run_id, holder=holder)
+    try:
+        status = read_run_status(run_id=run_id, data_dir=data_dir)
+        if status.state in ("abandoned", "human_approved"):
+            raise ValueError(
+                f"run {run_id} cannot be abandoned from state {status.state}"
+            )
+        fields = {"abandoned_by": abandoned_by}
+        if reason is not None:
+            fields["reason"] = reason
+        append_event(
+            data_dir=data_dir,
+            run_id=run_id,
+            event_type="run_abandoned",
+            **fields,
+        )
+        return Abandonment(
+            run_id=run_id,
+            state="abandoned",
+            abandoned_by=abandoned_by,
+            reason=reason,
+        )
+    finally:
+        release_claim(data_dir=data_dir, run_id=run_id, holder=holder)
 
 
 def append_event(
