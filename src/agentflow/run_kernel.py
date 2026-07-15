@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import fcntl
 import json
+import os
 from pathlib import Path
+import socket
 import subprocess
 import uuid
 
 from .repository_profile import inspect_repository_profile
+
+# Must strictly exceed the 3600-second adapter subprocess timeout in
+# agent_adapter.py so a live stage cannot lose its claim while its adapter
+# subprocess is still permitted to run.
+DEFAULT_CLAIM_LEASE_SECONDS = 7200
 
 
 @dataclass(frozen=True)
@@ -229,3 +238,74 @@ def append_event(
     event = {**fields, "sequence": sequence, "type": event_type}
     with events_path.open("a", encoding="utf-8") as events_file:
         events_file.write(json.dumps(event, sort_keys=True) + "\n")
+
+
+def default_claim_holder() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
+def _active_claim(events: list[dict]) -> dict | None:
+    active: dict | None = None
+    for event in events:
+        if event.get("type") == "claim_acquired":
+            active = event
+        elif event.get("type") in ("claim_released", "claim_expired"):
+            active = None
+    return active
+
+
+def acquire_claim(
+    *,
+    data_dir: Path,
+    run_id: str,
+    holder: str,
+    lease_seconds: int = DEFAULT_CLAIM_LEASE_SECONDS,
+    now: datetime | None = None,
+) -> None:
+    if now is None:
+        now = datetime.now(timezone.utc)
+    events_path = data_dir / "runs" / run_id / "events.jsonl"
+    with events_path.open("r+", encoding="utf-8") as events_file:
+        fcntl.flock(events_file.fileno(), fcntl.LOCK_EX)
+        lines = events_file.read().splitlines()
+        active = _active_claim([json.loads(line) for line in lines])
+        sequence = len(lines)
+        if active is not None:
+            if now < datetime.fromisoformat(active["expires_at"]):
+                raise ValueError(
+                    f"run {run_id} is already claimed by {active['holder']} "
+                    f"until {active['expires_at']}"
+                )
+            sequence += 1
+            expired = {
+                "expires_at": active["expires_at"],
+                "holder": active["holder"],
+                "sequence": sequence,
+                "type": "claim_expired",
+            }
+            events_file.write(json.dumps(expired, sort_keys=True) + "\n")
+        acquired = {
+            "acquired_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=lease_seconds)).isoformat(),
+            "holder": holder,
+            "sequence": sequence + 1,
+            "type": "claim_acquired",
+        }
+        events_file.write(json.dumps(acquired, sort_keys=True) + "\n")
+
+
+def release_claim(*, data_dir: Path, run_id: str, holder: str) -> None:
+    events_path = data_dir / "runs" / run_id / "events.jsonl"
+    with events_path.open("r+", encoding="utf-8") as events_file:
+        fcntl.flock(events_file.fileno(), fcntl.LOCK_EX)
+        lines = events_file.read().splitlines()
+        active = _active_claim([json.loads(line) for line in lines])
+        if active is None or active["holder"] != holder:
+            return
+        released = {
+            "expires_at": active["expires_at"],
+            "holder": holder,
+            "sequence": len(lines) + 1,
+            "type": "claim_released",
+        }
+        events_file.write(json.dumps(released, sort_keys=True) + "\n")

@@ -13,7 +13,7 @@ agentflow init
 agentflow profile --check "<command>"
 agentflow start "<task summary>"
 agentflow run <task.json>
-agentflow advance <run-id> [--adapter claude|codex]
+agentflow advance <run-id> [--adapter claude|codex] [--claim-lease-seconds <seconds>]
 agentflow status <run-id>
 agentflow approve <run-id> --approved-by <human identity>
 ```
@@ -82,13 +82,47 @@ New events contain a one-based `sequence` equal to their line number in
 | `awaiting_human` | `awaiting_human` |
 | `human_approved` | `human_approved` |
 
-`repository_snapshotted` and `repository_profile_captured` add evidence without
-changing state. `review_ready` is immediately followed by `awaiting_human` in
-the current workflow. Legacy events without sequence numbers remain readable,
-but any sequence number that is present must match its line position.
+`repository_snapshotted`, `repository_profile_captured`, `claim_acquired`,
+`claim_released`, and `claim_expired` add evidence without changing state.
+`review_ready` is immediately followed by `awaiting_human` in the current
+workflow. Legacy events without sequence numbers remain readable, but any
+sequence number that is present must match its line position.
 The Repository Profile path reported by `status` is replayed from
 `repository_profile_captured`, rather than rediscovered from the current Target
 Repository.
+
+## Stage claims
+
+Every `advance` acquires an atomic per-Run stage claim before executing any
+stage logic and releases it when the stage completes or fails. The event log is
+the only claim authority: no lock file or second store of claim state exists.
+
+- A claim is acquired by compare-and-append: the process opens `events.jsonl`,
+  takes an exclusive advisory `flock` on that same file handle, replays the
+  active claim from `claim_acquired`, `claim_released`, and `claim_expired`
+  events, and appends `claim_acquired` only when no unexpired claim is active.
+  All appends happen through the locked handle with the normal
+  sequence-equals-line-number rule.
+- `claim_acquired` carries the claiming process identity in `holder`
+  (`hostname:pid` by default), an ISO-8601 UTC `acquired_at`, and an ISO-8601
+  UTC lease expiry in `expires_at`. `claim_released` and `claim_expired` repeat
+  the released or expired claim's `holder` and `expires_at`.
+- A second `advance` on the same Run while an unexpired claim is active fails
+  with an error naming the holder and expiry, and appends nothing.
+- The default lease is `DEFAULT_CLAIM_LEASE_SECONDS = 7200`, which strictly
+  exceeds the 3600-second adapter subprocess timeout so a live stage cannot
+  lose its claim while its adapter is still permitted to run. `advance
+  --claim-lease-seconds` overrides the lease for one invocation.
+- An expired claim no longer blocks: the next `advance` appends
+  `claim_expired` evidence and then acquires its own claim. A stage that
+  legitimately exceeds its lease therefore relies on expired-claim recovery,
+  not on a mutual-exclusion guarantee.
+- Release is holder-scoped: `claim_released` is appended only when the active
+  claim's holder equals the releasing process identity. A superseded or
+  expired holder's release appends nothing, so it can never clear a claim now
+  legitimately held by another process.
+- The advisory `flock` is POSIX-only (`fcntl`), so the kernel currently
+  requires a POSIX platform.
 
 ## Module map
 
@@ -118,6 +152,10 @@ Repository.
   SHA, must leave its Workspace clean, and their raw results become Run
   Evidence.
 - Run State comes from event replay, not an independently edited status file.
+- Every `advance` acquires a stage claim before executing its stage; the event
+  log is the only claim authority.
+- Claim release is holder-scoped: only the process whose claim is active can
+  release it, on completion or failure alike.
 - Approval requires an explicit command, identity, clean Workspace, and exact
   candidate SHA.
 - No agent report can override command exit status or recorded evidence.

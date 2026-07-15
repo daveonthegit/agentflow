@@ -9,7 +9,14 @@ import subprocess
 
 from .agent_adapter import AgentAdapter
 from .contracts import validate_builder_report, validate_plan, validate_review
-from .run_kernel import append_event, read_run_status
+from .run_kernel import (
+    DEFAULT_CLAIM_LEASE_SECONDS,
+    acquire_claim,
+    append_event,
+    default_claim_holder,
+    read_run_status,
+    release_claim,
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +49,30 @@ def _changed_files(workspace: Path) -> list[str]:
 
 
 def advance_run(
+    *,
+    run_id: str,
+    data_dir: Path,
+    adapter: AgentAdapter | None,
+    claim_lease_seconds: int = DEFAULT_CLAIM_LEASE_SECONDS,
+) -> AdvancedRun:
+    holder = default_claim_holder()
+    acquire_claim(
+        data_dir=data_dir,
+        run_id=run_id,
+        holder=holder,
+        lease_seconds=claim_lease_seconds,
+    )
+    try:
+        return _advance_claimed_run(
+            run_id=run_id,
+            data_dir=data_dir,
+            adapter=adapter,
+        )
+    finally:
+        release_claim(data_dir=data_dir, run_id=run_id, holder=holder)
+
+
+def _advance_claimed_run(
     *,
     run_id: str,
     data_dir: Path,

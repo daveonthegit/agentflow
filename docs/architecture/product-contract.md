@@ -79,6 +79,15 @@ Every behavior statement carries one of three classifications:
 - **Implemented.** Each Run receives a unique Git branch and Workspace at
   start. Concurrent Runs never share a checkout, and a Workspace is never the
   Target Repository's primary checkout.
+- **Implemented.** Atomic stage claims prevent concurrent `advance` processes
+  on the same Run: every `advance` acquires a claim through the
+  compare-and-append claim events below before executing its stage and
+  releases it, holder-scoped, when the stage completes or fails. A second
+  `advance` while an unexpired claim is active fails with an error naming the
+  holder and lease expiry and changes nothing. The guarantee is bounded by the
+  lease: a stage that legitimately outlives its lease is recovered through
+  `claim_expired` evidence rather than protected by mutual exclusion, as
+  detailed in `run-kernel.md`.
 - **Confirmed decision.** Single-writer enforcement uses compare-and-append
   claim events appended to the Run's own event log: a process claims a stage
   by appending a claim event, and the append succeeds only if the log is
@@ -86,11 +95,9 @@ Every behavior statement carries one of three classifications:
   be recovered. No separate lock file, lock service, or second store of claim
   state is introduced; the event log remains the only claim authority. This
   resolves what were previously open locking choices in the decision map.
-- **Target.** Single-builder locking on a Workspace, atomic stage claims, and
-  prevention of concurrent `advance` processes on the same Run — all enforced
-  through the claim-event mechanism above. Today no code enforces any of
-  this: two simultaneous `advance` invocations on one Run are not blocked,
-  and operators must avoid this manually.
+- **Target.** Broader single-builder Workspace locking beyond the per-Run
+  stage claim — for example, blocking any second writer on a Workspace that
+  was not started through `advance` — remains unenforced.
 
 ## Work Graph
 
