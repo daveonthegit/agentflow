@@ -5,17 +5,28 @@ import json
 from pathlib import Path
 import uuid
 
+from .project_setup import initialize_repository
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="agentflow")
     subcommands = parser.add_subparsers(dest="command", required=True)
+    init_parser = subcommands.add_parser("init")
+    init_parser.add_argument("repository", nargs="?", type=Path, default=Path.cwd())
     run_parser = subcommands.add_parser("run")
     run_parser.add_argument("task", type=Path)
     run_parser.add_argument("--data-dir", type=Path, required=True)
     args = parser.parse_args()
 
-    if args.command != "run":
-        parser.error(f"unsupported command: {args.command}")
+    if args.command == "init":
+        result = initialize_repository(args.repository)
+        print(
+            json.dumps(
+                {"repository": str(result.repository), "state": "initialized"},
+                sort_keys=True,
+            )
+        )
+        return 0
 
     json.loads(args.task.read_text(encoding="utf-8"))
     run_id = uuid.uuid4().hex

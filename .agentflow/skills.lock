@@ -1,0 +1,11 @@
+source: https://github.com/mattpocock/skills
+revision: e9fcdf9
+installed_at: 2026-07-15
+includes:
+  - skills/engineering
+  - skills/productivity
+  - skills/misc
+  - skills/personal
+  - skills/in-progress
+excludes:
+  - skills/deprecated

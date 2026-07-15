@@ -1,0 +1,14 @@
+{
+  "name": "@daveonthegit/agentflow",
+  "version": "0.1.0",
+  "description": "Bootstrap the Agentflow CLI, source repository, and global AI skill",
+  "bin": {
+    "agentflow-install": "bin/agentflow-install.mjs"
+  },
+  "files": [
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
