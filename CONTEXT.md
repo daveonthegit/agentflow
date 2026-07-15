@@ -83,3 +83,23 @@ Work used to create a workflow capability that Agentflow cannot yet coordinate i
 ## Self-Hosted Run
 
 A Run whose Target Repository is Agentflow and whose required stages are coordinated and evidenced by Agentflow itself. Manual work around an unavailable stage remains Bootstrap Development, not a Self-Hosted Run.
+
+## Work Item
+
+One unit of intended work, owned by the Target Repository and stored as git-tracked JSONL under `.agentflow/work/`. A Run captures a Work Item into its immutable Task Spec by reference and content hash; later edits to the Work Item do not alter an active Run.
+
+## Work Graph
+
+The dependency graph of Work Items in a Target Repository, from which ready work is computed whenever it is needed rather than stored as a separately mutable value.
+
+## Claim
+
+A compare-and-append event in a Run's own event log by which exactly one process takes exclusive ownership of a stage. A Claim carries a lease expiry so that a stale Claim can be detected and recovered.
+
+## Discovery
+
+A structured finding returned by an Agent Role as part of its validated output contract. A Discovery is applied to the Work Graph only through deterministic validation, never by direct agent mutation.
+
+## Reconciliation Pass
+
+One bounded run of the reconcile command. It reads the Work Graph, Run Evidence, and Workspaces, records every decision it makes as an event, and never advances a Run through a human gate.

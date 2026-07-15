@@ -40,12 +40,39 @@ record and verify their outputs.
   approved, and merged as 5c4c2961d57ee1a340402f3d0165b5085da82a8f.
 - Gaps found during the Run feed the next vertical slice.
 
-## Next: adversarial verification
+## Next: kernel claims and run lifecycle operations
+
+- Compare-and-append stage claims in the Run's own event log, with lease
+  expiry, so exactly one process can claim and execute a stage.
+- Run enumeration across states without requiring a known run id.
+- Explicit abandon operation that appends a terminal event.
+- Bounded repair transitions out of `changes_requested` and explicit plan and
+  human rejection transitions, preserving all prior attempts as evidence.
+
+## Later: adversarial verification
 
 - Tester Agent Role that may modify tests but not production code.
 - Harden the existing read-only reviewer with evaluation fixtures.
 - Bounded builder-fix retry loops.
 - Evaluation fixtures and regression evidence for role and prompt changes.
+
+## Later: target-repository work graph and reconciliation
+
+- Work Items as git-tracked JSONL owned by the Target Repository under
+  `.agentflow/work/`, behind a replaceable backend interface.
+- Ready-work computation from typed dependency relationships rather than
+  stored status.
+- Structured Discoveries in role output contracts, applied to the Work Graph
+  only through deterministic validation.
+- Single-pass reconciliation that records every decision as an event and
+  stops at every human gate.
+
+## Later: read-only observability projections
+
+- A projection over Run Evidence and the Work Graph, rebuildable from events
+  at any time and never an authority.
+- Read-only views of runs, work, and evidence; mutation surfaces are deferred
+  until approval identity is authenticated.
 
 ## Later: merge and shipping
 

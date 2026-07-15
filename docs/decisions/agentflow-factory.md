@@ -6,18 +6,7 @@ decisions do not live here: confirmed behavior belongs in the
 trade-offs in [ADRs](../adr/). When a ticket below is answered, record the
 outcome in the appropriate durable document and remove the ticket.
 
-## 1. Locking mechanism for single-builder and atomic stage claims
-
-- **Blocked by:** none.
-- **Type:** implementation choice.
-- **Question:** What mechanism enforces single-builder locking on a Workspace,
-  atomic stage claims, and prevention of concurrent `advance` processes on the
-  same Run — for example an OS-level file lock in the run directory, a claim
-  event in `events.jsonl` with compare-and-append semantics, or a lease file
-  with expiry?
-- **Answer:** open.
-
-## 2. Adapter self-provisioning approach
+## 1. Adapter self-provisioning approach
 
 - **Blocked by:** none.
 - **Type:** implementation choice.
@@ -29,13 +18,28 @@ outcome in the appropriate durable document and remove the ticket.
   product contract?
 - **Answer:** open.
 
-## 3. Worktree cleanup and abandoned-run recovery
+## 2. Workspace cleanup policy for abandoned Runs
 
-- **Blocked by:** ticket 1 (recovery must distinguish an abandoned Run from
-  one actively claimed by another process).
+- **Blocked by:** none. Stage claims and lease expiry are decided: the
+  product contract records compare-and-append claim events in the Run's own
+  event log, so recovery can already distinguish an abandoned Run from one
+  actively claimed by another process. Only the cleanup policy remains open.
 - **Type:** implementation choice.
-- **Question:** How are Workspaces reclaimed and abandoned Runs recovered —
-  age-based garbage collection of worktrees, an explicit `agentflow abandon`
-  command that appends a terminal event, automatic recovery on next `advance`,
-  or a combination?
+- **Question:** How and when are the Workspaces of abandoned Runs reclaimed —
+  age-based garbage collection of worktrees, reclamation during a
+  reconciliation pass, on-demand cleanup by the next command that touches the
+  Run, or a combination?
+- **Answer:** open.
+
+## 3. Authenticated approval identity
+
+- **Blocked by:** none — but this ticket blocks any network or UI mutation
+  surface.
+- **Type:** implementation choice.
+- **Question:** `--approved-by` is currently unauthenticated free text,
+  acceptable for a single-operator CLI but unacceptable behind any network
+  surface. What mechanism authenticates the identity attached to an approval
+  — operating-system user identity, signed approvals, an identity provider,
+  or something else? No remote mutation surface may ship before approval
+  identity is authenticated.
 - **Answer:** open.

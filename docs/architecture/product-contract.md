@@ -1,8 +1,8 @@
 # Agentflow product and architecture contract
 
 This is the canonical contract for the Agentflow factory: the agreed behavior
-Agentflow must exhibit, with every statement classified as either implemented
-or target. Domain terms are defined in [`../../CONTEXT.md`](../../CONTEXT.md);
+Agentflow must exhibit, with every statement classified as implemented, as
+target, or as a confirmed decision. Domain terms are defined in [`../../CONTEXT.md`](../../CONTEXT.md);
 kernel mechanics, event contracts, and evidence layout are detailed in
 [`run-kernel.md`](run-kernel.md); unresolved implementation choices live in
 [`../decisions/agentflow-factory.md`](../decisions/agentflow-factory.md). This
@@ -10,7 +10,7 @@ document does not duplicate those sources.
 
 ## How to read this contract
 
-Every behavior statement carries one of two classifications:
+Every behavior statement carries one of three classifications:
 
 - **Implemented** — enforced by code in `src/` today and covered by the test
   suite. `run-kernel.md` describes the mechanism.
@@ -18,6 +18,11 @@ Every behavior statement carries one of two classifications:
   must never be described as implemented; when a target item lands, its
   classification changes here and the mechanism is documented in the
   architecture docs.
+- **Confirmed decision** — an agreed rule or mechanism choice that is binding
+  on future work but is not itself a code-enforced behavior. A confirmed
+  decision resolves what would otherwise be an open ticket in the decision
+  map; the behavior it governs may still be classified target until code
+  enforces it.
 
 ## Run lifecycle
 
@@ -74,15 +79,40 @@ Every behavior statement carries one of two classifications:
 - **Implemented.** Each Run receives a unique Git branch and Workspace at
   start. Concurrent Runs never share a checkout, and a Workspace is never the
   Target Repository's primary checkout.
-- **Target.** Single-builder locking on a Workspace. Workflow sequencing
-  invokes at most one builder stage per `advance`, but no lock prevents a
-  second builder process from entering the same Workspace.
-- **Target.** Atomic stage claims, so that exactly one process can claim and
-  execute a given stage of a Run.
-- **Target.** Prevention of concurrent `advance` processes on the same Run.
-  Today two simultaneous `advance` invocations on one Run are not blocked;
-  operators must avoid this manually. The locking mechanism is an open choice
-  in the [decision map](../decisions/agentflow-factory.md).
+- **Confirmed decision.** Single-writer enforcement uses compare-and-append
+  claim events appended to the Run's own event log: a process claims a stage
+  by appending a claim event, and the append succeeds only if the log is
+  unchanged since it was read. Claims carry lease expiry so stale claims can
+  be recovered. No separate lock file, lock service, or second store of claim
+  state is introduced; the event log remains the only claim authority. This
+  resolves what were previously open locking choices in the decision map.
+- **Target.** Single-builder locking on a Workspace, atomic stage claims, and
+  prevention of concurrent `advance` processes on the same Run — all enforced
+  through the claim-event mechanism above. Today no code enforces any of
+  this: two simultaneous `advance` invocations on one Run are not blocked,
+  and operators must avoid this manually.
+
+## Work Graph
+
+- **Target.** Work Items are owned by the Target Repository and stored as
+  git-tracked JSONL under `.agentflow/work/`. Work-intent truth is born in
+  the Work Graph, execution truth in Run Evidence; each keeps only references
+  to the other, never copies.
+- **Target.** Ready work is computed from the Work Graph's dependency
+  relationships whenever it is needed, never stored as an independently
+  mutable value.
+- **Target.** Agent Roles return structured Discoveries as part of their
+  validated output contracts. Discoveries are applied to the Work Graph only
+  by deterministic validation code; no agent mutates the Work Graph directly.
+
+## Reconciliation
+
+- **Target.** A single-pass reconcile command reads the Work Graph, Run
+  Evidence, Workspaces, and Git state, and acts only by issuing the same
+  application-service calls the CLI uses. Every decision it makes is recorded
+  as an event; it never writes state directly.
+- **Target.** Reconciliation never advances a Run through a human gate. It
+  may move a Run toward `awaiting_human`, never past it.
 
 ## Agent Adapters
 
