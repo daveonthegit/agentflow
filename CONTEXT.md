@@ -60,6 +60,10 @@ The explicit verification and human-approval condition that an Improvement Propo
 
 The exact commit SHA accepted by a human approval. Any subsequent code change invalidates that approval and requires the resulting revision to pass verification and approval again.
 
+## Candidate Revision
+
+The exact commit SHA produced by the builder and subjected to authoritative checks and review. It becomes an Approved Revision only after explicit human approval while the Workspace remains clean at that SHA.
+
 ## Merge Agent
 
 A constrained executor that may merge an Approved Revision only after deterministic gates confirm that approval is current, required checks pass for the exact merge candidate, and repository policy permits the operation. It records merge and post-merge evidence but does not grant approval itself.

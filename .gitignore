@@ -4,3 +4,4 @@ __pycache__/
 .DS_Store
 .agentflow/*
 !.agentflow/skills.lock
+!.agentflow/repository-profile.json

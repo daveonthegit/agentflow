@@ -15,16 +15,13 @@ record and verify their outputs.
 - Explicit human approval transition.
 - Removal of fabricated plan and check evidence.
 
-## Next: repository understanding
+## Completed: first supervised self-hosting foundation
 
 - Discover or create a target-local Repository Profile.
 - Map important directories, entry points, authoritative commands, and existing
   documentation without copying project knowledge into Agentflow.
 - Record the profile path, revision, and integrity metadata in Run Evidence.
 - Define freshness rules so stale maps are detected deterministically.
-
-## Next: first supervised Self-Hosted Run
-
 - Define versioned schemas for plan and role reports.
 - Add planner and builder Agent Roles.
 - Add at least one provider-specific Agent Adapter and one deterministic fake.
@@ -34,10 +31,17 @@ record and verify their outputs.
 - Bind approval to the exact candidate SHA.
 - Resume a Run from a fresh process.
 
-## Later: adversarial verification
+## Next: first supervised Self-Hosted Run
+
+- Use the committed Agentflow Repository Profile and installed Codex adapter.
+- Run one small Agentflow change through planner, builder, checks, and reviewer.
+- Stop at `awaiting_human` for exact candidate review and explicit approval.
+- Record gaps found during the Run as inputs to the next vertical slice.
+
+## Next: adversarial verification
 
 - Tester Agent Role that may modify tests but not production code.
-- Reviewer Agent Role that is read-only and emits severity-classified findings.
+- Harden the existing read-only reviewer with evaluation fixtures.
 - Bounded builder-fix retry loops.
 - Evaluation fixtures and regression evidence for role and prompt changes.
 

@@ -23,6 +23,41 @@ def git(*args: str, cwd: Path) -> str:
 
 
 class StartCommandTests(unittest.TestCase):
+    def test_start_rejects_a_dirty_target_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            repository = temp_path / "target"
+            data_dir = temp_path / "agentflow-home"
+            repository.mkdir()
+            git("init", cwd=repository)
+            git("config", "user.email", "agentflow@example.test", cwd=repository)
+            git("config", "user.name", "Agentflow Test", cwd=repository)
+            (repository / "README.md").write_text("# Target\n", encoding="utf-8")
+            git("add", "README.md", cwd=repository)
+            git("commit", "-m", "Initial commit", cwd=repository)
+            (repository / "README.md").write_text("dirty\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "agentflow",
+                    "start",
+                    "Add a health endpoint",
+                    "--data-dir",
+                    str(data_dir),
+                ],
+                cwd=repository,
+                env={**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must be clean", result.stderr)
+            self.assertFalse(data_dir.exists())
+
     def test_start_snapshots_task_and_repository_in_an_isolated_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

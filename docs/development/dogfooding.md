@@ -4,12 +4,14 @@ Agentflow is dogfooding only during a Self-Hosted Run. Using Agentflow to create
 a Workspace and then manually performing an unavailable stage is Bootstrap
 Development and must be labeled as such.
 
-## Current level: deterministic kernel
+## Current level: first supervised self-hosting threshold
 
-Agentflow can initialize itself, capture a Run, create an isolated Workspace,
-replay Run State, and record approval for an `awaiting_human` Run. It cannot yet
-plan, build, verify, or review its own changes. The kernel was therefore built
-through documented Bootstrap Development.
+Agentflow can now profile itself, invoke schema-constrained planner, builder,
+and reviewer roles through a provider adapter, enforce planned paths, commit a
+candidate, execute authoritative checks, replay state, and stop at a SHA-bound
+human approval gate. These capabilities were built through documented
+Bootstrap Development. The next small change will be the first supervised
+Self-Hosted Run.
 
 ## Minimum self-hosting threshold
 
@@ -34,8 +36,15 @@ Post-Merge Verification exist.
 ```bash
 cd /path/to/agentflow
 agentflow init
+agentflow profile --check "python3 -m unittest discover -s tests -v"
+git add .agentflow/repository-profile.json
+git commit -m "Add Agentflow repository profile"
 agentflow start "<one small Agentflow improvement>"
-agentflow status <run-id>
+agentflow advance <run-id> --adapter codex
+agentflow advance <run-id> --adapter codex
+agentflow advance <run-id>
+agentflow advance <run-id> --adapter codex
+agentflow status <run-id> # must report awaiting_human and candidate_sha
 ```
 
 The workflow—not the chat session—must then invoke the configured planner and
@@ -46,8 +55,9 @@ reviews the exact diff and records approval with:
 agentflow approve <run-id> --approved-by <identity>
 ```
 
-If any required stage is performed manually, record that gap and classify the
-Run as Bootstrap Development.
+Review `git diff <base-sha>..<candidate-sha>` in the Run's Workspace before
+approval. If any required stage is performed manually, record that gap and
+classify the Run as Bootstrap Development.
 
 ## Session continuity
 

@@ -1,7 +1,8 @@
-# Agentflow starter
+# Agentflow
 
-This is the deterministic kernel of a reusable agentic engineering workflow
-engine. It intentionally contains no model SDK or remote orchestration service.
+Agentflow is a reusable, project-agnostic engineering workflow engine. Code
+owns workflow state, evidence, Git isolation, checks, and approval gates. Model
+adapters provide bounded planning, implementation, and review judgments.
 
 See [`docs/README.md`](docs/README.md) for the architecture, domain decisions,
 dogfooding threshold, and dependency-ordered roadmap.
@@ -82,11 +83,17 @@ agentflow init
 `init` preserves existing repository instructions and installs a project-local
 Agentflow skill at `.agents/skills/agentflow/SKILL.md`. This is the entry point
 that tells compatible AI coding agents how to invoke the deterministic CLI.
+Commit the profile and start from a clean checkout so the captured base commit
+and profiled source are identical.
 
 ## Run the workflow
 
 ```bash
 cd /path/to/your-project
+agentflow init
+agentflow profile --check "your formatter command" --check "your test command"
+git add .agentflow/repository-profile.json
+git commit -m "Add Agentflow repository profile"
 agentflow start "Add a health endpoint"
 ```
 
@@ -94,14 +101,24 @@ The command snapshots the Task Spec, repository path, and exact base commit;
 creates a unique Git branch and external worktree; and returns a run identifier
 in the `ready` state.
 
-Inspect the run from a new process:
+Advance each stage from any process. Planning, building, and review need an
+adapter; authoritative verification does not:
+
+```bash
+agentflow advance <run-id> --adapter codex  # ready -> planned
+agentflow advance <run-id> --adapter codex  # planned -> built
+agentflow advance <run-id>                  # built -> verified or failed
+agentflow advance <run-id> --adapter codex  # verified -> awaiting_human
+```
+
+Inspect the replayed state at any point:
 
 ```bash
 agentflow status <run-id>
 ```
 
-When a later workflow stage records `awaiting_human`, approval must be an
-explicit command with a human identity:
+When review records `awaiting_human`, inspect the Workspace diff and candidate
+SHA. Approval must be an explicit command with a human identity:
 
 ```bash
 agentflow approve <run-id> --approved-by <identity>
@@ -123,6 +140,9 @@ The append-only event history is stored at:
 
 ## Current contract
 
-The kernel owns run identity, immutable input snapshots, Git worktree isolation,
-append-only events, state replay, and explicit human approval. Planner, builder,
-tester, reviewer, merger, and deployment adapters are not implemented yet.
+The kernel owns run identity, immutable input snapshots, Repository Profile
+integrity, Git worktree isolation, schema validation, allowed paths,
+authoritative checks, append-only events, state replay, and approval bound to an
+exact candidate SHA. Codex and deterministic fake adapters support planner,
+builder, and reviewer roles. Tester, bounded repair, merge, post-merge
+verification, and deployment are later slices.
