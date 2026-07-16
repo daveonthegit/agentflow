@@ -190,5 +190,141 @@ class WorkCommandTests(unittest.TestCase):
             )
 
 
+class CaptureWorkItemTests(unittest.TestCase):
+    def _init_repo(self, repository: Path) -> None:
+        repository.mkdir(parents=True)
+        subprocess.run(
+            ["git", "init"], cwd=repository, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "agentflow@example.test"],
+            cwd=repository,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Agentflow Test"],
+            cwd=repository,
+            check=True,
+        )
+        (repository / "README.md").write_text("# Target\n", encoding="utf-8")
+        work_dir = repository / ".agentflow" / "work"
+        work_dir.mkdir(parents=True)
+        (work_dir / "graph.jsonl").write_text(
+            "\n".join(
+                json.dumps(item)
+                for item in [
+                    {
+                        "id": "health",
+                        "summary": "Add a health endpoint",
+                        "acceptance_criteria": ["GET /health returns 200"],
+                        "depends_on": [],
+                    }
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "-A"], cwd=repository, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Init with work graph"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+
+    def test_start_work_item_captures_summary_criteria_and_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            repository = temp_path / "repo"
+            data_dir = temp_path / "home"
+            self._init_repo(repository)
+            environment = {
+                **os.environ,
+                "PYTHONPATH": str(PROJECT_ROOT / "src"),
+            }
+
+            started = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "agentflow",
+                    "start",
+                    "--work-item",
+                    "health",
+                    "--data-dir",
+                    str(data_dir),
+                ],
+                cwd=repository,
+                env=environment,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(started.returncode, 0, started.stderr)
+            run_id = json.loads(started.stdout)["run_id"]
+            self.assertEqual(json.loads(started.stdout)["work_item_id"], "health")
+
+            status = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "agentflow",
+                    "status",
+                    run_id,
+                    "--data-dir",
+                    str(data_dir),
+                ],
+                cwd=repository,
+                env=environment,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(status.returncode, 0, status.stderr)
+            payload = json.loads(status.stdout)
+            self.assertEqual(payload["summary"], "Add a health endpoint")
+            self.assertEqual(
+                payload["acceptance_criteria"], ["GET /health returns 200"]
+            )
+            source = payload["source"]
+            self.assertEqual(source["provider"], "work-graph")
+            self.assertEqual(source["work_item_id"], "health")
+            expected_hash = work_item_content_hash(
+                {
+                    "id": "health",
+                    "summary": "Add a health endpoint",
+                    "acceptance_criteria": ["GET /health returns 200"],
+                    "depends_on": [],
+                }
+            )
+            self.assertEqual(source["content_hash"], expected_hash)
+
+    def test_start_unknown_work_item_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            repository = temp_path / "repo"
+            self._init_repo(repository)
+            environment = {
+                **os.environ,
+                "PYTHONPATH": str(PROJECT_ROOT / "src"),
+            }
+            started = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "agentflow",
+                    "start",
+                    "--work-item",
+                    "ghost",
+                    "--data-dir",
+                    str(temp_path / "home"),
+                ],
+                cwd=repository,
+                env=environment,
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(started.returncode, 0)
+            self.assertIn("ghost", started.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

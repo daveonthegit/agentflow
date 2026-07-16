@@ -73,9 +73,11 @@ requires a new Run.
 ## Handing off to Execution
 
 Once the Work Graph is approved and committed, the deterministic half takes
-over. Compute ready Work Items with `agentflow work ready`, then run each
-independent item through its own gated Run via the `agentflow` skill (build →
-checks → tester → review → human approval). Ready work is recomputed from the
-graph and Run Evidence whenever needed; completing a Work Item's Run unblocks
-its dependents. Never fabricate stage evidence, and never merge without explicit
-human approval — the Execution gates are unchanged by Framing.
+over. Compute ready Work Items with `agentflow work ready`, then capture each
+independent item into its own gated Run with `agentflow start --work-item <id>`
+(this records the item by id and content hash) and drive it through the
+`agentflow` skill (build → checks → tester → review → human approval). Ready work
+is recomputed from the graph and Run Evidence whenever needed; a Work Item is
+done when its Run reaches human approval, which unblocks its dependents. Never
+fabricate stage evidence, and never merge without explicit human approval — the
+Execution gates are unchanged by Framing.

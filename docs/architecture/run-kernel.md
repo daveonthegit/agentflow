@@ -11,7 +11,7 @@ unless those gates are explicitly satisfied.
 ```bash
 agentflow init
 agentflow profile --check "<command>" [--test-path <repo-relative path>]
-agentflow start "<task summary>"
+agentflow start ("<task summary>" | --work-item <id>)
 agentflow run <task.json>
 agentflow advance <run-id> [--adapter claude|cursor|codex] [--model <model>] [--claim-lease-seconds <seconds>]
 agentflow models [--adapter claude|cursor --set <role>=<model>]
@@ -31,7 +31,12 @@ agentflow rebase <run-id>
   Workspace, records events, and returns `ready`. New Runs always persist
   `acceptance_criteria` (empty is valid). Optional `source` is omitted for
   direct human starts unless supplied by imported task JSON. Repeatable
-  `--acceptance-criterion` flags populate criteria on `start`.
+  `--acceptance-criterion` flags populate criteria on `start`. Alternatively,
+  `start --work-item <id>` captures a Work Item from the Target Repository's Work
+  Graph: its summary and acceptance criteria become the Task Spec and its
+  `source` records provider `work-graph`, the `work_item_id`, the capture time,
+  and the item's content hash (an unknown id is an error, and the summary and
+  criteria then come from the item, not the command line).
 - `profile` creates the target-owned repository map, check commands, and source
   fingerprint at `.agentflow/repository-profile.json`. Repeatable optional
   `--test-path <repo-relative path>` flags record the directories or files the

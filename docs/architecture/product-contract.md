@@ -221,11 +221,19 @@ Every behavior statement carries one of three classifications:
   decomposition) and ends in human approval before any Run consumes it; a cold
   Run never invents its own decomposition or parallelism. See
   [ADR 0005](../adr/0005-framing-is-warm-and-in-session.md).
+- **Implemented.** A Run captures a Work Item into its immutable Task Spec by
+  reference and content hash: `start --work-item <id>` reads the item from the
+  Target Repository's Work Graph and records its summary and acceptance criteria
+  plus a `source` of provider `work-graph`, the `work_item_id`, the capture
+  timestamp, and the item's content hash. Later edits to the Work Item do not
+  alter the captured Run; completion of that Run is what marks the item done for
+  ready-work computation.
 - **Target.** Agent Roles return structured Discoveries as part of their
   validated output contracts. Discoveries are applied to the Work Graph only
   by deterministic validation code; no agent mutates the Work Graph directly.
 - **Target.** Automatic dispatch of a ready Work Item into its own gated Run;
-  today ready work is computed and the operator starts each Run.
+  today ready work is computed and the operator captures each Run with
+  `start --work-item`.
 - **Implemented.** The cold planner stage has been retired in favor of warm
   framing (ADR 0005): a Run advances `ready` -> `built` directly by invoking the
   builder against the Task Spec, with no `plan_ready`/`plan.json` stage in

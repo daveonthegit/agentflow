@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from .work_graph import (
     compute_ready_work,
     completed_work_item_ids,
     load_work_graph,
+    work_item_content_hash,
 )
 from .run_kernel import (
     DEFAULT_CLAIM_LEASE_SECONDS,
@@ -51,12 +53,19 @@ def main() -> int:
         dest="test_paths",
     )
     start_parser = subcommands.add_parser("start")
-    start_parser.add_argument("summary")
+    start_parser.add_argument("summary", nargs="?")
     start_parser.add_argument(
         "--acceptance-criterion",
         action="append",
         default=[],
         dest="acceptance_criteria",
+    )
+    start_parser.add_argument(
+        "--work-item",
+        help=(
+            "capture this Work Item from the Target Repository's Work Graph "
+            "as the Task Spec (by id and content hash)"
+        ),
     )
     start_parser.add_argument("--data-dir", type=Path)
     status_parser = subcommands.add_parser("status")
@@ -145,22 +154,50 @@ def main() -> int:
         return 0
 
     if args.command == "start":
+        source = None
+        summary = args.summary
+        acceptance_criteria = args.acceptance_criteria
+        response: dict[str, object] = {}
+        if args.work_item is not None:
+            if args.summary is not None or args.acceptance_criteria:
+                parser.error(
+                    "--work-item takes the summary and acceptance criteria "
+                    "from the Work Item; do not also pass them"
+                )
+            graph = load_work_graph(Path.cwd())
+            item = next(
+                (entry for entry in graph if entry["id"] == args.work_item), None
+            )
+            if item is None:
+                parser.error(
+                    f"no Work Item {args.work_item!r} in the Work Graph"
+                )
+            summary = item["summary"]
+            acceptance_criteria = item["acceptance_criteria"]
+            source = {
+                "provider": "work-graph",
+                "work_item_id": item["id"],
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+                "content_hash": work_item_content_hash(item),
+            }
+            response["work_item_id"] = item["id"]
+        elif args.summary is None:
+            parser.error("either a summary or --work-item is required")
         result = start_run(
-            summary=args.summary,
-            acceptance_criteria=args.acceptance_criteria,
+            summary=summary,
+            acceptance_criteria=acceptance_criteria,
+            source=source,
             repository=Path.cwd(),
             data_dir=agentflow_home(args.data_dir),
         )
-        print(
-            json.dumps(
-                {
-                    "run_id": result.run_id,
-                    "state": result.state,
-                    "worktree": str(result.worktree),
-                },
-                sort_keys=True,
-            )
+        response.update(
+            {
+                "run_id": result.run_id,
+                "state": result.state,
+                "worktree": str(result.worktree),
+            }
         )
+        print(json.dumps(response, sort_keys=True))
         return 0
 
     if args.command == "status":
