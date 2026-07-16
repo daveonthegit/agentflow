@@ -155,6 +155,122 @@ class WorkGraphBackendTests(unittest.TestCase):
                 [],
             )
 
+    def test_swapping_backend_preserves_nested_field_isolation(self) -> None:
+        """In-memory and JSONL stores must not diverge under nested mutation.
+
+        Acceptance requires swapping the backend to change no Work Graph
+        semantics. JSONL isolates via serialization; a shallow in-memory copy
+        that aliases ``depends_on`` / ``acceptance_criteria`` lists does not.
+        """
+        items = validate_work_graph(
+            [
+                {
+                    "id": "a",
+                    "summary": "Work a",
+                    "acceptance_criteria": ["keep"],
+                    "depends_on": [],
+                },
+                _item("b", ["a"]),
+            ]
+        )
+        expected = validate_work_graph(
+            [
+                {
+                    "id": "a",
+                    "summary": "Work a",
+                    "acceptance_criteria": ["keep"],
+                    "depends_on": [],
+                },
+                _item("b", ["a"]),
+            ]
+        )
+        memory = InMemoryWorkGraphBackend()
+        memory.write_items(items)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            jsonl = JsonlWorkGraphBackend(repository)
+            jsonl.write_items(items)
+
+            items[0]["acceptance_criteria"].append("leaked")
+            items[1]["depends_on"].append("ghost")
+
+            memory_after_write = memory.read_items()
+            jsonl_after_write = jsonl.read_items()
+
+            memory_view = memory.read_items()
+            jsonl_view = jsonl.read_items()
+            memory_view[0]["acceptance_criteria"].append("read-leak")
+            memory_view[1]["depends_on"].append("read-ghost")
+            jsonl_view[0]["acceptance_criteria"].append("read-leak")
+            jsonl_view[1]["depends_on"].append("read-ghost")
+
+            memory_after_read = memory.read_items()
+            jsonl_after_read = jsonl.read_items()
+
+        self.assertEqual(jsonl_after_write, expected)
+        self.assertEqual(memory_after_write, expected)
+        self.assertEqual(memory_after_write, jsonl_after_write)
+        self.assertEqual(jsonl_after_read, expected)
+        self.assertEqual(memory_after_read, expected)
+        self.assertEqual(memory_after_read, jsonl_after_read)
+
+    def test_save_through_memory_backend_isolates_returned_items(self) -> None:
+        """save_work_graph via in-memory must not alias nested fields in store."""
+        memory = InMemoryWorkGraphBackend()
+        returned = save_work_graph(
+            [
+                {
+                    "id": "a",
+                    "summary": "Work a",
+                    "acceptance_criteria": ["keep"],
+                    "depends_on": [],
+                }
+            ],
+            backend=memory,
+        )
+        returned[0]["acceptance_criteria"].append("leaked")
+        loaded = load_work_graph(backend=memory)
+        self.assertEqual(loaded[0]["acceptance_criteria"], ["keep"])
+
+    def test_save_work_graph_fully_replaces_existing_jsonl_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            work_dir = repository / ".agentflow" / "work"
+            work_dir.mkdir(parents=True)
+            (work_dir / "alpha.jsonl").write_text(
+                json.dumps(_item("old-a")) + "\n", encoding="utf-8"
+            )
+            (work_dir / "beta.jsonl").write_text(
+                json.dumps(_item("old-b")) + "\n", encoding="utf-8"
+            )
+            replacement = save_work_graph([_item("new")], repository)
+            remaining = sorted(path.name for path in work_dir.glob("*.jsonl"))
+            self.assertEqual(remaining, ["graph.jsonl"])
+            self.assertEqual(load_work_graph(repository), replacement)
+
+    def test_swapping_backend_preserves_ready_work_semantics(self) -> None:
+        graph = [_item("a"), _item("b", ["a"]), _item("c", ["b"])]
+        memory = InMemoryWorkGraphBackend()
+        saved_memory = save_work_graph(graph, backend=memory)
+        ready_memory = [
+            item["id"]
+            for item in compute_ready_work(load_work_graph(backend=memory), set())
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            saved_jsonl = save_work_graph(graph, repository)
+            ready_jsonl = [
+                item["id"]
+                for item in compute_ready_work(load_work_graph(repository), set())
+            ]
+
+        self.assertEqual(saved_memory, saved_jsonl)
+        self.assertEqual(ready_memory, ["a"])
+        self.assertEqual(ready_jsonl, ["a"])
+        self.assertEqual(ready_memory, ready_jsonl)
+
 
 class ReadyWorkTests(unittest.TestCase):
     def test_ready_excludes_completed_and_blocked(self) -> None:
