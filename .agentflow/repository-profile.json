@@ -78,6 +78,7 @@
       "docs/adr/0002-store-run-evidence-outside-repositories.md",
       "docs/adr/0003-target-repositories-own-project-knowledge.md",
       "docs/adr/0004-separate-workflow-semantics-from-agent-adapters.md",
+      "docs/adr/0005-framing-is-warm-and-in-session.md",
       "docs/agents/domain.md",
       "docs/agents/issue-tracker.md",
       "docs/agents/triage-labels.md",
@@ -109,7 +110,7 @@
     ]
   },
   "schema_version": 1,
-  "source_fingerprint": "dae0803753473be6da417f4586b36e69b5f261975f4bc4ec34145488d333f4b7",
+  "source_fingerprint": "5f6f4b4003b467251f17e22f2288a385d42a09db6e6ba6a79a2d7466ad8aa33f",
   "test_paths": [
     "tests"
   ]
