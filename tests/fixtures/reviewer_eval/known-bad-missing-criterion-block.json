@@ -1,0 +1,22 @@
+{
+  "candidate": "known-bad",
+  "label": "Leaves an acceptance criterion unimplemented; reviewer requests changes.",
+  "task": {
+    "summary": "Add a --json flag to the status command",
+    "acceptance_criteria": [
+      "status --json emits a single machine-readable JSON object",
+      "the existing human-readable output is unchanged without the flag"
+    ]
+  },
+  "review": {
+    "disposition": "changes_requested",
+    "findings": [
+      {
+        "file": "src/agentflow/__main__.py",
+        "message": "status --json still prints the human-readable banner before the JSON, so the output is not a single JSON object.",
+        "severity": "major"
+      }
+    ]
+  },
+  "expected_gate": "blocked"
+}

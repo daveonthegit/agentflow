@@ -1,0 +1,22 @@
+{
+  "candidate": "known-bad",
+  "label": "Reviewer states approve but reports a blocker; the blocker must override the disposition and gate the run.",
+  "task": {
+    "summary": "Persist the run claim atomically",
+    "acceptance_criteria": [
+      "a claim is written with a single atomic append",
+      "a second concurrent claim attempt is rejected"
+    ]
+  },
+  "review": {
+    "disposition": "approve",
+    "findings": [
+      {
+        "file": "src/agentflow/run_kernel.py",
+        "message": "The claim is appended after an unlocked read, so two processes can both observe no claim and both append one.",
+        "severity": "blocker"
+      }
+    ]
+  },
+  "expected_gate": "blocked"
+}

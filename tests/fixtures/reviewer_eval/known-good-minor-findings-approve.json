@@ -1,0 +1,27 @@
+{
+  "candidate": "known-good",
+  "label": "Meets the criteria; reviewer approves while noting minor, non-blocking nits.",
+  "task": {
+    "summary": "Cache the parsed repository profile between reads",
+    "acceptance_criteria": [
+      "the profile is parsed at most once per process",
+      "a changed profile on disk is re-read on the next process"
+    ]
+  },
+  "review": {
+    "disposition": "approve",
+    "findings": [
+      {
+        "file": "src/agentflow/repository_profile.py",
+        "message": "The cache key comment could name the invalidation trigger.",
+        "severity": "minor"
+      },
+      {
+        "file": null,
+        "message": "Consider a follow-up to document the caching behaviour in the profile docs.",
+        "severity": "note"
+      }
+    ]
+  },
+  "expected_gate": "approve"
+}

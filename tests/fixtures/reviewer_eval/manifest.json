@@ -1,0 +1,4 @@
+{
+  "reviewer_fingerprint": "e6c89337b7088d6f2d130288ff32ac1a5dbb9db1afd0f60ab0f1963b9dbf7209",
+  "note": "This digest pins the reviewer prompt (ROLE_INSTRUCTIONS['reviewer']) and its per-adapter model routing. If test_reviewer_eval fails on this digest, the reviewer prompt or a reviewer model changed: re-review every candidate fixture in this directory against the new reviewer, update any fixture whose expected verdict shifts, then refresh this digest to agentflow.reviewer.reviewer_fingerprint()."
+}

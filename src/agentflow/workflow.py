@@ -17,6 +17,7 @@ from .contracts import (
     validate_review,
     validate_tester_report,
 )
+from .reviewer import GATE_BLOCKED, gate_decision
 from .run_kernel import (
     DEFAULT_CLAIM_LEASE_SECONDS,
     acquire_claim,
@@ -669,10 +670,7 @@ def _advance_claimed_run(
             json.dumps(review, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        has_blocker = any(
-            finding["severity"] == "blocker" for finding in review["findings"]
-        )
-        if review["disposition"] != "approve" or has_blocker:
+        if gate_decision(review) == GATE_BLOCKED:
             append_event(
                 data_dir=data_dir,
                 holder=holder,

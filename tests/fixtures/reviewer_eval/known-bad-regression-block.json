@@ -1,0 +1,27 @@
+{
+  "candidate": "known-bad",
+  "label": "Introduces a regression; reviewer requests changes and reports a blocker.",
+  "task": {
+    "summary": "Speed up event replay by memoizing the projector",
+    "acceptance_criteria": [
+      "replayed run state is identical to the un-memoized projector",
+      "replay does not read events out of order"
+    ]
+  },
+  "review": {
+    "disposition": "changes_requested",
+    "findings": [
+      {
+        "file": "src/agentflow/run_kernel.py",
+        "message": "The memoized projector keys on run id only, so a new event after the first replay is never observed and replayed state goes stale.",
+        "severity": "blocker"
+      },
+      {
+        "file": null,
+        "message": "No test covers replay after appending an event to an already-replayed run.",
+        "severity": "major"
+      }
+    ]
+  },
+  "expected_gate": "blocked"
+}

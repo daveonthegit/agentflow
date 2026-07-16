@@ -1,0 +1,16 @@
+{
+  "candidate": "known-good",
+  "label": "Implements every acceptance criterion cleanly; reviewer approves with no findings.",
+  "task": {
+    "summary": "Add a --json flag to the status command",
+    "acceptance_criteria": [
+      "status --json emits a single machine-readable JSON object",
+      "the existing human-readable output is unchanged without the flag"
+    ]
+  },
+  "review": {
+    "disposition": "approve",
+    "findings": []
+  },
+  "expected_gate": "approve"
+}
