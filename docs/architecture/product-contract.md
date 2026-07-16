@@ -241,12 +241,17 @@ Every behavior statement carries one of three classifications:
 
 ## Reconciliation
 
-- **Target.** A single-pass reconcile command reads the Work Graph, Run
-  Evidence, Workspaces, and Git state, and acts only by issuing the same
-  application-service calls the CLI uses. Every decision it makes is recorded
-  as an event; it never writes state directly.
-- **Target.** Reconciliation never advances a Run through a human gate. It
-  may move a Run toward `awaiting_human`, never past it.
+- **Implemented.** A single-pass `reconcile` command reads the Work Graph and
+  Run Evidence, captures each ready Work Item that has no live Run into a new
+  Run, and advances every graph-backed Run toward its next human gate. It acts
+  only by issuing the same `start`/`advance` application-service calls the CLI
+  uses, so all execution truth stays in the per-Run event logs; it writes no
+  state directly and returns a decision report (dispatched, advanced, blocked,
+  completed).
+- **Implemented.** Reconciliation never advances a Run through a human gate: it
+  only calls `advance`, never `approve`, so a Run stops at `awaiting_human`.
+- **Target.** Capacity limits, stale-claim recovery, and re-dispatch of a
+  failed Work Item's Run within reconcile.
 
 ## Agent Adapters
 

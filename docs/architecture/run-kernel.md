@@ -22,6 +22,8 @@ agentflow approve <run-id> --approved-by <human identity>
 agentflow reject <run-id> --rejected-by <human identity> [--reason <text>]
 agentflow abandon <run-id> --abandoned-by <identity> [--reason <text>]
 agentflow rebase <run-id>
+agentflow work (list | ready) [--repository <path>]
+agentflow reconcile [--adapter claude|cursor|codex|fake] [--repository <path>]
 ```
 
 - `init` installs the canonical project-local Agentflow skill and a managed
@@ -200,6 +202,14 @@ agentflow rebase <run-id>
   Items that are not yet complete and whose dependencies all are, deriving
   completion from `human_approved` Runs in Agentflow Home. It is strictly
   read-only over both the graph and Run Evidence and never writes state.
+- `reconcile` runs one reconciliation pass over the Target Repository: it
+  captures each ready Work Item that has no live Run into a new Run (recording a
+  `work-graph` source with the item's id and content hash) and advances every
+  graph-backed Run toward its next human gate, stopping at `awaiting_human`. It
+  only issues `start`/`advance` calls — never `approve` — so it cannot cross a
+  human gate, and all evidence is the normal per-Run event log. It prints a
+  decision report (`dispatched`, `advanced`, `blocked`, `completed`). Capacity
+  limits, stale-claim recovery, and re-dispatch of failed Runs are later work.
 
 ## Agentflow Home
 

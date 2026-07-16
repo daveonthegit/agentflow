@@ -36,7 +36,25 @@ from .run_kernel import (
     reject_run,
     start_run,
 )
+from .reconcile import reconcile
 from .workflow import advance_run
+
+
+def _build_adapter(args, parser):
+    """Construct the Agent Adapter selected on the command line, or None."""
+    if args.model is not None and args.adapter not in {"claude", "cursor"}:
+        parser.error("--model requires --adapter claude or cursor")
+    if args.adapter is None:
+        return None
+    if args.adapter == "fake":
+        if args.adapter_fixture is None:
+            parser.error("--adapter-fixture is required for the fake adapter")
+        return DeterministicFakeAdapter(args.adapter_fixture)
+    if args.adapter == "claude":
+        return ClaudeAdapter(data_dir=agentflow_home(args.data_dir), model=args.model)
+    if args.adapter == "codex":
+        return CodexAdapter()
+    return CursorAdapter(data_dir=agentflow_home(args.data_dir), model=args.model)
 
 
 def main() -> int:
@@ -116,6 +134,14 @@ def main() -> int:
         metavar="role=model",
     )
     models_parser.add_argument("--data-dir", type=Path)
+    reconcile_parser = subcommands.add_parser("reconcile")
+    reconcile_parser.add_argument("--repository", type=Path, default=Path("."))
+    reconcile_parser.add_argument(
+        "--adapter", choices=("claude", "codex", "cursor", "fake")
+    )
+    reconcile_parser.add_argument("--adapter-fixture", type=Path)
+    reconcile_parser.add_argument("--model")
+    reconcile_parser.add_argument("--data-dir", type=Path)
     run_parser = subcommands.add_parser("run")
     run_parser.add_argument("task", type=Path)
     run_parser.add_argument("--data-dir", type=Path)
@@ -371,25 +397,7 @@ def main() -> int:
         return 0
 
     if args.command == "advance":
-        if args.model is not None and args.adapter not in {"claude", "cursor"}:
-            parser.error("--model requires --adapter claude or cursor")
-        adapter = None
-        if args.adapter == "fake":
-            if args.adapter_fixture is None:
-                parser.error("--adapter-fixture is required for the fake adapter")
-            adapter = DeterministicFakeAdapter(args.adapter_fixture)
-        elif args.adapter == "claude":
-            adapter = ClaudeAdapter(
-                data_dir=agentflow_home(args.data_dir),
-                model=args.model,
-            )
-        elif args.adapter == "codex":
-            adapter = CodexAdapter()
-        elif args.adapter == "cursor":
-            adapter = CursorAdapter(
-                data_dir=agentflow_home(args.data_dir),
-                model=args.model,
-            )
+        adapter = _build_adapter(args, parser)
         result = advance_run(
             run_id=args.run_id,
             data_dir=agentflow_home(args.data_dir),
@@ -412,6 +420,16 @@ def main() -> int:
             completed = completed_work_item_ids(agentflow_home(args.data_dir))
             graph = compute_ready_work(graph, completed)
         print(json.dumps(graph, sort_keys=True))
+        return 0
+
+    if args.command == "reconcile":
+        adapter = _build_adapter(args, parser)
+        report = reconcile(
+            repository=args.repository,
+            data_dir=agentflow_home(args.data_dir),
+            adapter=adapter,
+        )
+        print(json.dumps(report, sort_keys=True))
         return 0
 
     task = validate_task_spec(json.loads(args.task.read_text(encoding="utf-8")))
