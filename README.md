@@ -124,6 +124,22 @@ SHA. Approval must be an explicit command with a human identity:
 agentflow approve <run-id> --approved-by <identity>
 ```
 
+Rejection is likewise an explicit, human-attributed command
+(`agentflow reject <run-id> --rejected-by <identity> [--reason <text>]`). When a
+Run is blocked only because the planner omitted a file, widen the builder's
+allowed paths with an explicit amendment instead of abandoning the Run:
+
+```bash
+agentflow amend-plan <run-id> --add-path <repo-relative path> [--add-path ...] --amended-by <identity> [--reason <text>]
+```
+
+`amend-plan` is allowed only from `planned` or `changes_requested`. It appends a
+`plan_amended` event that widens the effective plan fed to the builder, repair,
+and reviewer stages without rewriting immutable `plan.json`; it never removes
+paths. Like `approve` and `reject`, it records explicit human direction —
+conversational agreement is never amendment evidence, so amend only when the
+human has explicitly directed it.
+
 `agentflow run examples/task.json` remains as a compatibility command for
 importing a JSON Task Spec into the same real kernel. It does not fabricate
 planning, testing, or approval evidence.

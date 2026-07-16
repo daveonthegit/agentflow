@@ -21,6 +21,7 @@ from .repository_profile import create_repository_profile
 from .run_kernel import (
     DEFAULT_CLAIM_LEASE_SECONDS,
     abandon_run,
+    amend_plan,
     approve_run,
     follow_run,
     list_runs,
@@ -71,6 +72,17 @@ def main() -> int:
     approve_parser.add_argument("run_id")
     approve_parser.add_argument("--approved-by", required=True)
     approve_parser.add_argument("--data-dir", type=Path)
+    amend_plan_parser = subcommands.add_parser("amend-plan")
+    amend_plan_parser.add_argument("run_id")
+    amend_plan_parser.add_argument(
+        "--add-path",
+        action="append",
+        required=True,
+        dest="added_paths",
+    )
+    amend_plan_parser.add_argument("--amended-by", required=True)
+    amend_plan_parser.add_argument("--reason")
+    amend_plan_parser.add_argument("--data-dir", type=Path)
     rebase_parser = subcommands.add_parser("rebase")
     rebase_parser.add_argument("run_id")
     rebase_parser.add_argument("--data-dir", type=Path)
@@ -170,6 +182,8 @@ def main() -> int:
             response["acceptance_criteria"] = result.acceptance_criteria
         if result.source is not None:
             response["source"] = result.source
+        if result.plan_amendments is not None:
+            response["plan_amendments"] = result.plan_amendments
         print(json.dumps(response, sort_keys=True))
         return 0
 
@@ -255,6 +269,25 @@ def main() -> int:
                 sort_keys=True,
             )
         )
+        return 0
+
+    if args.command == "amend-plan":
+        result = amend_plan(
+            run_id=args.run_id,
+            added_paths=args.added_paths,
+            amended_by=args.amended_by,
+            reason=args.reason,
+            data_dir=agentflow_home(args.data_dir),
+        )
+        response = {
+            "added_paths": result.added_paths,
+            "amended_by": result.amended_by,
+            "run_id": result.run_id,
+            "state": result.state,
+        }
+        if result.reason is not None:
+            response["reason"] = result.reason
+        print(json.dumps(response, sort_keys=True))
         return 0
 
     if args.command == "rebase":

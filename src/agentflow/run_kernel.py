@@ -13,7 +13,7 @@ import time
 from typing import Any, Callable, TextIO
 import uuid
 
-from .contracts import validate_task_spec
+from .contracts import validate_planned_paths, validate_task_spec
 from .repository_profile import inspect_repository_profile
 
 # Run states that require external action; `follow_run` prints a final status
@@ -66,6 +66,16 @@ class RunStatus:
     approved_sha: str | None
     acceptance_criteria: list[str] | None = None
     source: dict[str, str] | None = None
+    plan_amendments: list[dict] | None = None
+
+
+@dataclass(frozen=True)
+class PlanAmendment:
+    run_id: str
+    state: str
+    added_paths: list[str]
+    amended_by: str
+    reason: str | None
 
 
 @dataclass(frozen=True)
@@ -224,6 +234,10 @@ def read_run_status(*, run_id: str, data_dir: Path) -> RunStatus:
     candidate_sha: str | None = None
     approved_sha: str | None = None
     rebased_base_sha: str | None = None
+    plan_amendments: list[dict] = []
+    # 'plan_amended' is deliberately absent here: like claim_* bookkeeping it is
+    # non-state-projecting, so the state_by_event.get(type, state) fallback below
+    # leaves planned/changes_requested unchanged when an amendment is replayed.
     state_by_event = {
         "run_created": "created",
         "workspace_ready": "ready",
@@ -265,6 +279,14 @@ def read_run_status(*, run_id: str, data_dir: Path) -> RunStatus:
             rebased_base_sha = event["new_base_sha"]
         if event["type"] == "human_approved":
             approved_sha = event.get("approved_sha")
+        if event["type"] == "plan_amended":
+            amendment = {
+                "added_paths": event["added_paths"],
+                "amended_by": event["amended_by"],
+            }
+            if "reason" in event:
+                amendment["reason"] = event["reason"]
+            plan_amendments.append(amendment)
 
     task_path = run_dir / "task.json"
     task = json.loads(task_path.read_text(encoding="utf-8")) if task_path.exists() else {}
@@ -290,6 +312,7 @@ def read_run_status(*, run_id: str, data_dir: Path) -> RunStatus:
         approved_sha=approved_sha,
         acceptance_criteria=criteria if criteria else None,
         source=source if isinstance(source, dict) else None,
+        plan_amendments=plan_amendments if plan_amendments else None,
     )
 
 
@@ -489,6 +512,63 @@ def reject_run(
                 rejected_sha=status.candidate_sha,
             )
         raise ValueError(f"run {run_id} cannot be rejected from state {status.state}")
+    finally:
+        release_claim(data_dir=data_dir, run_id=run_id, holder=holder)
+
+
+def amend_plan(
+    *,
+    run_id: str,
+    added_paths: list[str],
+    amended_by: str,
+    reason: str | None = None,
+    data_dir: Path,
+) -> PlanAmendment:
+    """Record an explicit, human-attributed widening of the builder's paths.
+
+    Appends a ``plan_amended`` bookkeeping event whose ``added_paths`` widen the
+    Run's effective plan without ever rewriting immutable ``plan.json``. The
+    event is non-state-projecting: amending from ``planned`` leaves the Run
+    ``planned`` and from ``changes_requested`` leaves it ``changes_requested``.
+    Amendment is permitted only from those two states; every other state is a
+    hard error and appends nothing. Conversation text is never amendment
+    evidence: only this command appends the event.
+    """
+    holder = default_claim_holder()
+    acquire_claim(data_dir=data_dir, run_id=run_id, holder=holder)
+    try:
+        status = read_run_status(run_id=run_id, data_dir=data_dir)
+        if status.state not in {"planned", "changes_requested"}:
+            raise ValueError(
+                f"run {run_id} cannot be amended from state {status.state}"
+            )
+        if status.worktree is None:
+            raise ValueError(f"run {run_id} has no Workspace")
+        # Validate before appending so an invalid path leaves no event.
+        validate_planned_paths(
+            plan={"files_to_modify": added_paths},
+            workspace=Path(status.worktree),
+        )
+        normalized = sorted(set(added_paths))
+        fields: dict[str, object] = {
+            "added_paths": normalized,
+            "amended_by": amended_by,
+        }
+        if reason is not None:
+            fields["reason"] = reason
+        append_event(
+            data_dir=data_dir,
+            run_id=run_id,
+            event_type="plan_amended",
+            **fields,
+        )
+        return PlanAmendment(
+            run_id=run_id,
+            state=status.state,
+            added_paths=normalized,
+            amended_by=amended_by,
+            reason=reason,
+        )
     finally:
         release_claim(data_dir=data_dir, run_id=run_id, holder=holder)
 

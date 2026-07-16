@@ -82,6 +82,16 @@ Every behavior statement carries one of three classifications:
   `plan_rejected`; from `awaiting_human` it appends terminal `human_rejected`
   bound to the candidate SHA. Rejection conversation text is never evidence.
   Rejected Runs cannot advance, approve, abandon, rebase, or be rejected again.
+- **Implemented.** Human-attributed plan amendment: claim-guarded `amend-plan`
+  with at least one `--add-path`, required `--amended-by`, and optional
+  `--reason` widens the builder's allowed paths as recorded `plan_amended`
+  evidence, never by editing immutable `plan.json`. It is permitted only from
+  `planned` or `changes_requested`, projects no state, validates added paths
+  like planned paths before appending, and only ever adds paths. The effective
+  plan (the sorted union of `plan.json` and every amendment's `added_paths`)
+  feeds and is enforced across the builder, repair, and reviewer stages, so a
+  Run blocked only because the planner omitted a file can proceed instead of
+  being abandoned. Conversational agreement is never amendment evidence.
 - **Target.** Explicit plan approval, a tester role, bounded builder-fix retry
   loops, a constrained Merge Agent, and Post-Merge Verification. Merge and
   deployment remain manual after approval until these exist.

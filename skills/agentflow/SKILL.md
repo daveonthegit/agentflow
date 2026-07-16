@@ -121,6 +121,24 @@ agentflow reject <run-id> --rejected-by <human identity> [--reason <text>]
 
 Rejected Runs cannot advance, approve, abandon, rebase, or be rejected again.
 
+## Amend the plan
+
+If a Run is blocked only because the planner omitted a file the builder must
+touch, and the user explicitly directs it, widen the builder's allowed paths
+with the claim-guarded amend command instead of abandoning the Run:
+
+```bash
+agentflow amend-plan <run-id> --add-path <repo-relative path> [--add-path ...] --amended-by <human identity> [--reason <text>]
+```
+
+This is permitted only from `planned` or `changes_requested`. It appends a
+`plan_amended` event that widens the effective plan fed to the builder, repair,
+and reviewer stages without rewriting immutable `plan.json`, and it only ever
+adds paths. Like approval and rejection, amendment records explicit human
+direction: ordinary conversational agreement is never amendment evidence, so
+amend only when the user has explicitly directed it. `agentflow status`
+lists recorded amendments under `plan_amendments`.
+
 ## Preserve gate integrity
 
 - Never claim a plan, build, check, review, approval, merge, or deployment

@@ -117,6 +117,27 @@ def _artifact_path(run_dir: Path, event: dict, legacy_name: str) -> Path:
     return run_dir / legacy_name
 
 
+def _effective_plan(run_dir: Path) -> dict:
+    """Return the plan with ``files_to_modify`` widened by every amendment.
+
+    Loads and validates immutable ``plan.json``, then returns a NEW plan dict
+    whose ``files_to_modify`` is the sorted union of the original list and the
+    ``added_paths`` of every ``plan_amended`` event. Never writes ``plan.json``.
+    """
+    plan = validate_plan(
+        json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
+    )
+    added: set[str] = set()
+    for event in _read_events(run_dir):
+        if event["type"] == "plan_amended":
+            added.update(event["added_paths"])
+    if not added:
+        return plan
+    effective = dict(plan)
+    effective["files_to_modify"] = sorted(set(plan["files_to_modify"]) | added)
+    return effective
+
+
 def _enforce_builder_report(
     *,
     plan: dict,
@@ -395,9 +416,7 @@ def _advance_claimed_run(
                 role="reviewer",
                 request={
                     "checks": json.loads(checks_path.read_text(encoding="utf-8")),
-                    "plan": json.loads(
-                        (run_dir / "plan.json").read_text(encoding="utf-8")
-                    ),
+                    "plan": _effective_plan(run_dir),
                     "base_sha": status.base_sha,
                     "candidate_sha": candidate_sha,
                     "task": task,
@@ -492,9 +511,7 @@ def _advance_claimed_run(
             raise ValueError("Workspace HEAD no longer matches the candidate SHA")
         if _git("status", "--porcelain", "--untracked-files=all", cwd=workspace):
             raise ValueError("Workspace is not clean at the candidate SHA")
-        plan = validate_plan(
-            json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
-        )
+        plan = _effective_plan(run_dir)
         review_event = next(
             event for event in reversed(events) if event["type"] == "review_blocked"
         )
@@ -550,9 +567,7 @@ def _advance_claimed_run(
 
     if adapter is None:
         raise ValueError("the builder stage requires an Agent Adapter")
-    plan = validate_plan(
-        json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
-    )
+    plan = _effective_plan(run_dir)
     events = _read_events(run_dir)
     generation = _candidate_generation(events) + 1
     transcript_path = run_dir / f"builder-{generation}-transcript.jsonl"

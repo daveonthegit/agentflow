@@ -62,6 +62,21 @@ record and verify their outputs.
 - Check records enriched with `started_at`, `duration_ms`, shared per-stage
   `attempt`, and an allowlisted environment fingerprint only.
 
+## Completed: human plan amendment
+
+- Claim-guarded `amend-plan <run-id> --add-path <path> [--add-path ...]
+  --amended-by <identity> [--reason <text>]` appends a human-attributed,
+  non-state-projecting `plan_amended` event, permitted only from `planned` or
+  `changes_requested`.
+- The event widens the builder's allowed paths without ever rewriting immutable
+  `plan.json`; an effective plan unions `plan.json`'s `files_to_modify` with
+  every amendment's sorted, de-duplicated `added_paths` and feeds the builder,
+  repair, and reviewer stages.
+- Added paths are validated like planned paths before any event is appended, so
+  an invalid path leaves no trace; amendments only add paths, never remove them.
+- `status` lists recorded amendments under `plan_amendments`; conversational
+  agreement is never amendment evidence.
+
 ## Later: adversarial verification
 
 - Tester Agent Role that may modify tests but not production code.

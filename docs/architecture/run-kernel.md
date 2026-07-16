@@ -20,6 +20,7 @@ agentflow watch <run-id>
 agentflow list [--state <state>]
 agentflow approve <run-id> --approved-by <human identity>
 agentflow reject <run-id> --rejected-by <human identity> [--reason <text>]
+agentflow amend-plan <run-id> --add-path <repo-relative path> [--add-path ...] --amended-by <human identity> [--reason <text>]
 agentflow abandon <run-id> --abandoned-by <identity> [--reason <text>]
 agentflow rebase <run-id>
 ```
@@ -103,9 +104,10 @@ agentflow rebase <run-id>
 - `status` replays events in sequence and combines the result with captured
   input metadata. Its JSON includes `repository_profile_path` when a
   `repository_profile_captured` event supplies that relative path; runs without
-  profile evidence retain the legacy response shape. `source` and
-  `acceptance_criteria` appear only when present and non-empty so legacy
-  response shapes stay compatible.
+  profile evidence retain the legacy response shape. `source`,
+  `acceptance_criteria`, and `plan_amendments` appear only when present and
+  non-empty so legacy response shapes stay compatible. Each `plan_amendments`
+  entry carries `added_paths`, `amended_by`, and `reason` when it was supplied.
 - `list` replays every Run in Agentflow Home and prints a JSON array sorted by
   each Run's first event, so ordering is deterministic across invocations. Each
   entry carries the `status` fields `run_id`, `state`, `base_sha`, `summary`,
@@ -120,6 +122,24 @@ agentflow rebase <run-id>
   bound to the candidate SHA. It requires `--rejected-by` and accepts optional
   `--reason`. Conversation text is never rejection evidence. Rejected Runs
   cannot advance, approve, abandon, rebase, or be rejected again.
+- `amend-plan` acquires the Run's stage claim and appends a non-state-projecting
+  `plan_amended` bookkeeping event that widens the builder's allowed paths
+  without ever rewriting immutable `plan.json`. It is permitted only when the
+  replayed state is `planned` or `changes_requested`; any other state (including
+  terminal and rejected Runs) is a hard error naming the state and appends no
+  `plan_amended` event. At least one `--add-path` and `--amended-by` are
+  required, `--reason` is optional, and every added path is validated with the
+  same rules as planned paths (non-empty, relative, never escaping the
+  Workspace) before any event is appended so an invalid path leaves no trace.
+  `added_paths` are sorted and de-duplicated. Because `plan_amended` projects no
+  state, amending from `changes_requested` leaves the Run in
+  `changes_requested`, never `planned`. Like `approve`/`reject`, the command
+  records explicit human direction; conversational agreement is never amendment
+  evidence. The effective plan — the sorted union of `plan.json`'s
+  `files_to_modify` and every amendment's `added_paths` — feeds the builder,
+  repair, and reviewer stages, which enforce and review against that union; the
+  planner stage is unaffected. `status` lists recorded amendments under
+  `plan_amendments` when at least one exists.
 - `abandon` acquires the Run's stage claim before appending the terminal
   `run_abandoned` event, so a Run actively claimed by a live process cannot be
   abandoned out from under it. The event records the required `--abandoned-by`
@@ -215,7 +235,14 @@ fake and Codex adapters produce no transcript and therefore no `transcript`
 field.
 Both fields are provenance only — state projection is unchanged.
 `repository_snapshotted`, `repository_profile_captured`, `claim_acquired`,
-`claim_released`, and `claim_expired` add evidence without changing state.
+`claim_released`, `claim_expired`, and `plan_amended` add evidence without
+changing state — none has an entry in the state-projection table above, so the
+`state_by_event.get(type, state)` fallback leaves the replayed state unchanged.
+`plan_amended` is the human-attributed plan-amendment bookkeeping event; it
+carries a sorted, de-duplicated `added_paths`, `amended_by`, and optional
+`reason`, and widens the effective plan fed to the builder, repair, and reviewer
+stages without rewriting `plan.json`. Amending from `planned` leaves the Run
+`planned` and from `changes_requested` leaves it `changes_requested`.
 `review_ready` is immediately followed by `awaiting_human` in the current
 workflow. `abandoned`, `plan_rejected`, and `human_rejected` are terminal: a
 Run can never advance and can never be approved from them. Legacy events
@@ -345,6 +372,11 @@ the only claim authority: no lock file or second store of claim state exists.
   candidate SHA.
 - Rejection requires an explicit command and identity; conversation text is
   never rejection evidence. `plan_rejected` and `human_rejected` are terminal.
+- Plan amendment requires an explicit, human-attributed command; it only widens
+  the builder's allowed paths as recorded `plan_amended` evidence and never
+  rewrites immutable `plan.json`. It is allowed only from `planned` or
+  `changes_requested`, projects no state, and amendments only add paths — never
+  remove or narrow them.
 - A candidate may be repaired from `changes_requested` at most
   `MAX_REPAIR_ATTEMPTS` times; each repair commits a new candidate, preserves
   prior attempt artifacts, and re-enters `built` for checks and review.
