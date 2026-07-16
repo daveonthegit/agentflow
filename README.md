@@ -1,8 +1,22 @@
 # Agentflow
 
-Agentflow is a reusable, project-agnostic engineering workflow engine. Code
-owns workflow state, evidence, Git isolation, checks, and approval gates. Model
-adapters provide bounded planning, implementation, and review judgments.
+Agentflow is a reusable, project-agnostic engineering workflow engine. Its goal
+is to make model-produced changes **trustworthy** — to make it cheap to prove a
+change is good, not expensive to produce it. Code owns workflow state, evidence,
+Git isolation, checks, and approval gates; model adapters provide only bounded,
+schema-validated judgments that no self-report can use to override that
+evidence. Agentflow's identity is the gate: an approval bound to an exact,
+verified revision.
+
+Work moves through two halves. **Framing** — deciding what to build — is
+interactive and warm, runs in the operator's main session, and ends when a human
+approves a Work Graph. **Execution** — building, validating, and shipping an
+approved Work Item — is cold, deterministic, and gated, with the Work Graph as
+the only safe source of parallelism. See
+[`docs/architecture/product-contract.md`](docs/architecture/product-contract.md)
+for the goal and the full contract, and
+[`docs/adr/0005-framing-is-warm-and-in-session.md`](docs/adr/0005-framing-is-warm-and-in-session.md)
+for why framing is not a cold stage.
 
 See [`docs/README.md`](docs/README.md) for the architecture, domain decisions,
 dogfooding threshold, and dependency-ordered roadmap.

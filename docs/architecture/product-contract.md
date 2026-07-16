@@ -8,6 +8,32 @@ kernel mechanics, event contracts, and evidence layout are detailed in
 [`../decisions/agentflow-factory.md`](../decisions/agentflow-factory.md). This
 document does not duplicate those sources.
 
+## Purpose
+
+Agentflow exists to make model-produced changes **trustworthy**: to make it
+cheap to *prove* a change is good, not expensive to *produce* it. Its identity
+is the gate — an approval bound to an exact, verified revision, backed by
+evidence no model self-report can override. When goals conflict on cost, trust
+wins; consistent quality is enforced at the gate (what evidence must exist)
+rather than by running every stage, and unattended autonomy is a later
+multiplier that is only turned on once a trusted change is both cheap and sound.
+
+Work moves through two halves with a deliberate seam between them:
+
+- **Framing** — deciding *what* to build. Interactive, warm, human-in-the-loop,
+  driven by an Agentflow-owned skill: clarify intent, surface edge cases,
+  produce efficient documentation, and decompose the work into a Work Graph.
+  Framing runs in the operator's main session, not as a cold stage, and ends
+  when the human approves the Work Graph (content-hashed, immutable). See
+  [ADR 0005](../adr/0005-framing-is-warm-and-in-session.md).
+- **Execution** — turning an approved Work Item into shipped, validated code.
+  Cold, deterministic, and gated: the Work Graph is the only safe source of
+  parallelism, and independent Work Items run as separate gated Runs.
+
+The Work Graph is the boundary object between the two halves. A cold Run never
+invents its own decomposition or parallelism; it executes work a human already
+approved. This document classifies where each half stands today.
+
 ## How to read this contract
 
 Every behavior statement carries one of three classifications:

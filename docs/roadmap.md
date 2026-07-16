@@ -4,6 +4,13 @@ The roadmap is ordered by dependency. Each milestone must be a working vertical
 slice with executable acceptance tests; roles are added only when the kernel can
 record and verify their outputs.
 
+Agentflow's goal is to make model-produced changes trustworthy (see the
+[product contract](architecture/product-contract.md)). Work splits into a warm,
+interactive **Framing** half that produces an approved Work Graph and a cold,
+deterministic **Execution** half that builds and gates it. Because Execution is
+concurrent, the concurrency and evidence-integrity foundation is a prerequisite
+for the Work-Graph and reconciliation milestones below and is fixed first.
+
 ## Completed: installation and deterministic kernel
 
 - Public one-command installer and global skill distribution.
@@ -86,6 +93,32 @@ record and verify their outputs.
   events and `tested` state; the tester commit re-runs the authoritative checks
   into `checks-<G>-post-tests.json`, and its prose findings are evidence surfaced
   to the reviewer that never gate the workflow alone.
+
+## Completed: concurrency and evidence-integrity foundation
+
+- Sequence assignment and the append share one advisory lock, so racing writers
+  cannot collide on a sequence number and make a Run permanently unreplayable.
+- `approve` is claim-guarded and re-verifies the candidate under the claim, so a
+  concurrent rebase cannot bind approval to a stale revision.
+- A stage-result append is refused once another process has taken over an
+  expired claim; `list` isolates a single unreadable Run instead of failing
+  wholesale. (GitHub issue #1.)
+
+## Later: framing and the warm/cold seam
+
+- An Agentflow-owned framing skill that runs warm in the operator's session,
+  produces efficient documentation and a Work Graph, and ends in human approval
+  of the graph (content-hashed, immutable). See ADR 0005.
+- Retire the cold planner stage; a Run begins at build against an approved Work
+  Item.
+- Spec-approval gate as recorded evidence, distinct from candidate approval.
+
+## Later: Workspace enforcement hardening
+
+- Close the enforcement blind spots to `.git` internals, `core.hooksPath`, and
+  `.gitignore`d files so a read-only reviewer cannot escape its sandbox and a
+  builder/tester cannot pass checks against state that never enters the
+  candidate. (Audit finding #3.)
 
 ## Later: adversarial verification hardening
 
