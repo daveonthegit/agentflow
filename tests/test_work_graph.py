@@ -17,6 +17,7 @@ from agentflow.work_graph import (  # noqa: E402
     InMemoryWorkGraphBackend,
     JsonlWorkGraphBackend,
     compute_ready_work,
+    default_work_graph_backend,
     load_work_graph,
     save_work_graph,
     work_item_content_hash,
@@ -270,6 +271,144 @@ class WorkGraphBackendTests(unittest.TestCase):
         self.assertEqual(ready_memory, ["a"])
         self.assertEqual(ready_jsonl, ["a"])
         self.assertEqual(ready_memory, ready_jsonl)
+
+    def test_default_work_graph_backend_is_jsonl_for_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            backend = default_work_graph_backend(repository)
+            self.assertIsInstance(backend, JsonlWorkGraphBackend)
+            save_work_graph([_item("a")], repository)
+            self.assertEqual(backend.read_items(), load_work_graph(repository))
+
+    def test_load_and_save_route_through_injected_backend(self) -> None:
+        """Reads and writes must go through the backend interface, not a side path."""
+
+        class RecordingBackend:
+            def __init__(self) -> None:
+                self.reads = 0
+                self.writes: list[list[dict]] = []
+                self._items: list[dict] = []
+
+            def read_items(self) -> list[dict]:
+                self.reads += 1
+                return [dict(item) for item in self._items]
+
+            def write_items(self, items: list[dict]) -> None:
+                self.writes.append([dict(item) for item in items])
+                self._items = [dict(item) for item in items]
+
+        backend = RecordingBackend()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            saved = save_work_graph(
+                [_item("a"), _item("b", ["a"])], repository, backend=backend
+            )
+            loaded = load_work_graph(repository, backend=backend)
+            self.assertEqual(len(backend.writes), 1)
+            self.assertEqual(backend.reads, 1)
+            self.assertEqual(saved, loaded)
+            self.assertEqual([item["id"] for item in backend.writes[0]], ["a", "b"])
+            self.assertFalse((repository / ".agentflow" / "work").exists())
+
+    def test_invalid_save_does_not_write_and_preserves_prior_graph(self) -> None:
+        prior = [_item("ok")]
+        invalid = [_item("a", ["ghost"])]
+        memory = InMemoryWorkGraphBackend()
+        save_work_graph(prior, backend=memory)
+        with self.assertRaises(ContractError):
+            save_work_graph(invalid, backend=memory)
+        self.assertEqual(load_work_graph(backend=memory), validate_work_graph(prior))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            save_work_graph(prior, repository)
+            with self.assertRaises(ContractError):
+                save_work_graph(invalid, repository)
+            self.assertEqual(load_work_graph(repository), validate_work_graph(prior))
+
+    def test_load_rejects_invalid_planted_items_on_both_backends(self) -> None:
+        invalid = [
+            {
+                "id": "a",
+                "summary": "A",
+                "acceptance_criteria": [],
+                "depends_on": ["ghost"],
+            }
+        ]
+        memory = InMemoryWorkGraphBackend()
+        memory.write_items(invalid)
+        with self.assertRaises(ContractError) as memory_error:
+            load_work_graph(backend=memory)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            JsonlWorkGraphBackend(repository).write_items(invalid)
+            with self.assertRaises(ContractError) as jsonl_error:
+                load_work_graph(repository)
+
+        self.assertEqual(str(memory_error.exception), str(jsonl_error.exception))
+
+    def test_inmemory_constructor_isolates_nested_fields(self) -> None:
+        source = [
+            {
+                "id": "a",
+                "summary": "Work a",
+                "acceptance_criteria": ["keep"],
+                "depends_on": [],
+            }
+        ]
+        memory = InMemoryWorkGraphBackend(source)
+        source[0]["acceptance_criteria"].append("leaked")
+        source[0]["depends_on"].append("ghost")
+        self.assertEqual(
+            memory.read_items()[0]["acceptance_criteria"], ["keep"]
+        )
+        self.assertEqual(memory.read_items()[0]["depends_on"], [])
+
+    def test_jsonl_save_return_isolates_from_store(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            returned = save_work_graph(
+                [
+                    {
+                        "id": "a",
+                        "summary": "Work a",
+                        "acceptance_criteria": ["keep"],
+                        "depends_on": [],
+                    }
+                ],
+                repository,
+            )
+            returned[0]["acceptance_criteria"].append("leaked")
+            loaded = load_work_graph(repository)
+        self.assertEqual(loaded[0]["acceptance_criteria"], ["keep"])
+
+    def test_write_items_replaces_dotfile_jsonl_and_preserves_non_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            work_dir = repository / ".agentflow" / "work"
+            work_dir.mkdir(parents=True)
+            (work_dir / ".stale.jsonl").write_text(
+                json.dumps(_item("hidden-stale")) + "\n", encoding="utf-8"
+            )
+            (work_dir / "notes.md").write_text("keep me\n", encoding="utf-8")
+            (work_dir / "alpha.jsonl").write_text(
+                json.dumps(_item("old")) + "\n", encoding="utf-8"
+            )
+            backend = JsonlWorkGraphBackend(repository)
+            replacement = validate_work_graph([_item("new")])
+            backend.write_items(replacement)
+
+            remaining_jsonl = sorted(path.name for path in work_dir.glob("*.jsonl"))
+            self.assertEqual(remaining_jsonl, ["graph.jsonl"])
+            self.assertFalse((work_dir / ".stale.jsonl").exists())
+            self.assertEqual(
+                (work_dir / "notes.md").read_text(encoding="utf-8"), "keep me\n"
+            )
+            self.assertEqual(backend.read_items(), replacement)
+            memory = InMemoryWorkGraphBackend([_item("hidden-stale"), _item("old")])
+            memory.write_items(replacement)
+            self.assertEqual(memory.read_items(), backend.read_items())
 
 
 class ReadyWorkTests(unittest.TestCase):
