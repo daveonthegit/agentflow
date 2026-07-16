@@ -88,7 +88,8 @@
       "docs/development/dogfooding.md",
       "docs/investigations/2026-07-15-work-graph-and-web-ui.md",
       "docs/roadmap.md",
-      "skills/agentflow/SKILL.md"
+      "skills/agentflow/SKILL.md",
+      "skills/framing/SKILL.md"
     ],
     "top_level": [
       ".agentflow",
@@ -110,7 +111,7 @@
     ]
   },
   "schema_version": 1,
-  "source_fingerprint": "2ba393c1f4d86ea3d87ae6e4e9bdbc2a2287e8dd4edff55eefccb94a08cd973b",
+  "source_fingerprint": "266dfa4bdb508bb051a3ce654c7f52fb97cadee532f2fd80c05ad6d9ce06631d",
   "test_paths": [
     "tests"
   ]
