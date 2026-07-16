@@ -109,5 +109,8 @@
     ]
   },
   "schema_version": 1,
-  "source_fingerprint": "997a75677826730f09bf9efdfade23f8fcf20f6fb62e4e3e3d58ac9de2b174b0"
+  "source_fingerprint": "dae0803753473be6da417f4586b36e69b5f261975f4bc4ec34145488d333f4b7",
+  "test_paths": [
+    "tests"
+  ]
 }
