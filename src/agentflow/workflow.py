@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import subprocess
 import time
@@ -17,6 +17,7 @@ from .contracts import (
     validate_plan,
     validate_planned_paths,
     validate_review,
+    validate_tester_report,
 )
 from .run_kernel import (
     DEFAULT_CLAIM_LEASE_SECONDS,
@@ -90,7 +91,12 @@ def _latest_candidate_sha(events: list[dict]) -> str:
     for event in reversed(events):
         if event["type"] == "candidate_rebased":
             return event["new_candidate_sha"]
-        if event["type"] in ("build_ready", "repair_ready"):
+        if event["type"] in (
+            "build_ready",
+            "repair_ready",
+            "tests_ready",
+            "tests_failed",
+        ):
             return event["candidate_sha"]
     raise ValueError("no candidate SHA recorded")
 
@@ -133,6 +139,41 @@ def _enforce_builder_report(
         )
     if report["unresolved_issues"]:
         raise ValueError("builder reported unresolved issues")
+    return changed_files
+
+
+def _is_under_test_paths(path: str, test_paths: list[str]) -> bool:
+    candidate = PurePosixPath(path)
+    for test_path in test_paths:
+        base = PurePosixPath(test_path)
+        if candidate == base:
+            return True
+        try:
+            candidate.relative_to(base)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
+def _enforce_tester_report(
+    *,
+    report: dict,
+    workspace: Path,
+    test_paths: list[str],
+) -> list[str]:
+    changed_files = _changed_files(workspace)
+    if sorted(report["files_changed"]) != changed_files:
+        raise ValueError(
+            "tester report files_changed does not match the authoritative Git diff"
+        )
+    offending = sorted(
+        path for path in changed_files if not _is_under_test_paths(path, test_paths)
+    )
+    if offending:
+        raise ValueError(
+            f"tester changed files outside the declared test paths: {offending}"
+        )
     return changed_files
 
 
@@ -254,6 +295,7 @@ def _advance_claimed_run(
         "planned",
         "built",
         "verified",
+        "tested",
         "changes_requested",
     }:
         raise ValueError(f"run {run_id} cannot advance from state {status.state}")
@@ -371,24 +413,177 @@ def _advance_claimed_run(
 
     if status.state == "verified":
         if adapter is None:
+            raise ValueError("the tester stage requires an Agent Adapter")
+        test_paths = profile.get("test_paths")
+        if not test_paths:
+            raise ValueError(
+                f"run {run_id} Repository Profile declares no test_paths; "
+                "regenerate the profile with --test-path, commit it, and start "
+                "a new Run"
+            )
+        events = _read_events(run_dir)
+        checks_event = next(
+            event for event in reversed(events) if event["type"] == "checks_passed"
+        )
+        candidate_sha = checks_event["candidate_sha"]
+        if _git("rev-parse", "HEAD", cwd=workspace) != candidate_sha:
+            raise ValueError(
+                "verified Workspace HEAD no longer matches the candidate SHA"
+            )
+        if _git("status", "--porcelain", "--untracked-files=all", cwd=workspace):
+            raise ValueError("verified Workspace is not clean at the candidate SHA")
+        checks_path = _artifact_path(run_dir, checks_event, "checks.json")
+        # G is fixed across the tester commit: tests_ready is excluded from
+        # _candidate_generation, so post-tests checks land in a distinct
+        # checks-<G>-post-tests.json without overwriting checks-<G>.json.
+        generation = _candidate_generation(events)
+        transcript_path = run_dir / f"tester-{generation}-transcript.jsonl"
+        report = validate_tester_report(
+            adapter.invoke(
+                role="tester",
+                request={
+                    "checks": json.loads(checks_path.read_text(encoding="utf-8")),
+                    "plan": json.loads(
+                        (run_dir / "plan.json").read_text(encoding="utf-8")
+                    ),
+                    "profile": profile,
+                    "base_sha": status.base_sha,
+                    "candidate_sha": candidate_sha,
+                    "task": task,
+                    "test_paths": test_paths,
+                },
+                workspace=workspace,
+                transcript_path=transcript_path,
+            )
+        )
+        changed_files = _enforce_tester_report(
+            report=report, workspace=workspace, test_paths=test_paths
+        )
+        artifact = run_dir / f"tester-report-{generation}.json"
+        artifact.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        if not changed_files:
+            # The tester wrote no tests; the existing checks evidence still
+            # proves the unchanged candidate, so checks are not re-run.
+            append_event(
+                data_dir=data_dir,
+                run_id=run_id,
+                event_type="tests_ready",
+                adapter=adapter.name,
+                artifact=str(artifact),
+                candidate_sha=candidate_sha,
+                checks_artifact=str(checks_path),
+                **_transcript_field(transcript_path),
+                **_model_provenance(adapter),
+            )
+            return AdvancedRun(
+                run_id=run_id,
+                state="tested",
+                artifact=artifact,
+                candidate_sha=candidate_sha,
+            )
+        _git("add", "--all", cwd=workspace)
+        _git("commit", "-m", f"Agentflow run {run_id} tests {generation}", cwd=workspace)
+        new_candidate_sha = _git("rev-parse", "HEAD", cwd=workspace)
+        check_env = {
+            **os.environ,
+            "LANG": "C.UTF-8",
+            "PYTHONHASHSEED": "0",
+            "TZ": "UTC",
+        }
+        fingerprint = {
+            **environment_fingerprint(),
+            "LANG": check_env["LANG"],
+            "PYTHONHASHSEED": check_env["PYTHONHASHSEED"],
+            "TZ": check_env["TZ"],
+        }
+        checks, all_passed = _run_profile_checks(
+            commands=profile["checks"],
+            workspace=workspace,
+            attempt=generation,
+            environment=check_env,
+            environment_fingerprint=fingerprint,
+            clock=clock,
+            monotonic=monotonic,
+        )
+        workspace_clean = not _git(
+            "status", "--porcelain", "--untracked-files=all", cwd=workspace
+        )
+        if not workspace_clean:
+            all_passed = False
+        post_artifact = run_dir / f"checks-{generation}-post-tests.json"
+        post_artifact.write_text(
+            json.dumps(
+                {
+                    "candidate_sha": new_candidate_sha,
+                    "checks": checks,
+                    "workspace_clean": workspace_clean,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if all_passed:
+            append_event(
+                data_dir=data_dir,
+                run_id=run_id,
+                event_type="tests_ready",
+                adapter=adapter.name,
+                artifact=str(artifact),
+                candidate_sha=new_candidate_sha,
+                checks_artifact=str(post_artifact),
+                **_transcript_field(transcript_path),
+                **_model_provenance(adapter),
+            )
+            return AdvancedRun(
+                run_id=run_id,
+                state="tested",
+                artifact=artifact,
+                candidate_sha=new_candidate_sha,
+            )
+        append_event(
+            data_dir=data_dir,
+            run_id=run_id,
+            event_type="tests_failed",
+            adapter=adapter.name,
+            artifact=str(artifact),
+            candidate_sha=new_candidate_sha,
+            checks_artifact=str(post_artifact),
+            findings=report["findings"],
+            **_transcript_field(transcript_path),
+            **_model_provenance(adapter),
+        )
+        return AdvancedRun(
+            run_id=run_id,
+            state="failed",
+            artifact=post_artifact,
+            candidate_sha=new_candidate_sha,
+        )
+
+    if status.state == "tested":
+        if adapter is None:
             raise ValueError("the reviewer stage requires an Agent Adapter")
         events = _read_events(run_dir)
-        candidate_sha = next(
-            event["candidate_sha"]
-            for event in reversed(events)
-            if event["type"] == "checks_passed"
+        tests_event = next(
+            event for event in reversed(events) if event["type"] == "tests_ready"
         )
+        candidate_sha = tests_event["candidate_sha"]
+        checks_path = Path(tests_event["checks_artifact"])
         before_head = _git("rev-parse", "HEAD", cwd=workspace)
         before_status = _git(
             "status", "--porcelain", "--untracked-files=all", cwd=workspace
         )
         if before_head != candidate_sha or before_status:
-            raise ValueError("verified Workspace is not clean at the candidate SHA")
-        checks_event = next(
-            event for event in reversed(events) if event["type"] == "checks_passed"
-        )
-        checks_path = _artifact_path(run_dir, checks_event, "checks.json")
+            raise ValueError("tested Workspace is not clean at the candidate SHA")
         generation = _candidate_generation(events)
+        tester_report_path = _artifact_path(
+            run_dir, tests_event, f"tester-report-{generation}.json"
+        )
+        tester_report = json.loads(tester_report_path.read_text(encoding="utf-8"))
         transcript_path = run_dir / f"reviewer-{generation}-transcript.jsonl"
         review = validate_review(
             adapter.invoke(
@@ -401,6 +596,7 @@ def _advance_claimed_run(
                     "base_sha": status.base_sha,
                     "candidate_sha": candidate_sha,
                     "task": task,
+                    "tester_findings": tester_report["findings"],
                 },
                 workspace=workspace,
                 transcript_path=transcript_path,

@@ -8,6 +8,7 @@ import unittest
 
 from test_advance_command import (
     PROJECT_ROOT,
+    advance_tester,
     agentflow,
     create_profiled_run,
     create_verified_run,
@@ -223,6 +224,7 @@ class WatchCommandTests(unittest.TestCase):
             temp_path = Path(temp_dir)
             environment = base_environment()
             data_dir, run_id = create_verified_run(temp_path, environment)
+            advance_tester(temp_path, data_dir, run_id, environment)
             run_dir = data_dir / "runs" / run_id
 
             fake_claude = temp_path / "claude"
@@ -266,6 +268,7 @@ class WatchCommandTests(unittest.TestCase):
             temp_path = Path(temp_dir)
             environment = base_environment()
             data_dir, run_id = create_verified_run(temp_path, environment)
+            advance_tester(temp_path, data_dir, run_id, environment)
             run_dir = data_dir / "runs" / run_id
 
             fake_claude = temp_path / "claude"

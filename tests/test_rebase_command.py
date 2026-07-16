@@ -16,16 +16,20 @@ from agentflow.run_kernel import acquire_claim  # noqa: E402
 
 try:
     from tests.test_advance_command import (
+        advance_tester,
         agentflow,
         create_built_run,
         create_profiled_run,
+        create_tested_run,
         create_verified_run,
     )
 except ImportError:  # unittest discover imports test modules without a package
     from test_advance_command import (
+        advance_tester,
         agentflow,
         create_built_run,
         create_profiled_run,
+        create_tested_run,
         create_verified_run,
     )
 
@@ -246,6 +250,7 @@ class RebaseCommandTests(unittest.TestCase):
             self.assertEqual(
                 json.loads(verified.stdout)["candidate_sha"], new_candidate
             )
+            advance_tester(temp_path, data_dir, run_id, environment)
             fixture_path = temp_path / "adapter-fixture.json"
             fixture_path.write_text(
                 json.dumps({"reviewer": {"disposition": "approve", "findings": []}}),
@@ -376,7 +381,7 @@ class RebaseCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
-            data_dir, run_id = create_verified_run(temp_path, environment)
+            data_dir, run_id = create_tested_run(temp_path, environment)
             fixture_path = temp_path / "adapter-fixture.json"
             fixture_path.write_text(
                 json.dumps({"reviewer": {"disposition": "approve", "findings": []}}),
@@ -451,6 +456,7 @@ class RebaseCommandTests(unittest.TestCase):
             }
             environment["PYTHONPATH"] = str(PROJECT_ROOT / "src")
             data_dir, run_id = create_verified_run(temp_path, environment)
+            advance_tester(temp_path, data_dir, run_id, environment)
             fake_claude = temp_path / "claude"
             write_executable(fake_claude, REVIEWER_APPROVE_STUB)
             claude_environment = {
@@ -534,6 +540,7 @@ class RebaseCommandTests(unittest.TestCase):
                 pre_artifacts["checks-1.json"][1],
             )
 
+            advance_tester(temp_path, data_dir, run_id, environment)
             write_executable(fake_claude, REVIEWER_POST_REBASE_STUB)
             rereviewed = agentflow(
                 "advance",

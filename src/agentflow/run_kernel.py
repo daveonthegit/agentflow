@@ -40,10 +40,13 @@ TERMINAL_IMMUTABLE_STATES = frozenset(
     }
 )
 
-# Must strictly exceed the 3600-second adapter subprocess timeout in
-# agent_adapter.py so a live stage cannot lose its claim while its adapter
-# subprocess is still permitted to run.
-DEFAULT_CLAIM_LEASE_SECONDS = 7200
+# Must strictly exceed the adapter subprocess timeout plus the authoritative
+# check budget for a single stage, because the tester stage runs an adapter
+# invocation (3600-second timeout in agent_adapter.py) and then re-runs the
+# profile checks (1800-second per-command timeout in workflow.py) within one
+# claim, so a live stage cannot lose its claim while its work is permitted to
+# run.
+DEFAULT_CLAIM_LEASE_SECONDS = 14400
 
 
 @dataclass(frozen=True)
@@ -233,6 +236,8 @@ def read_run_status(*, run_id: str, data_dir: Path) -> RunStatus:
         "candidate_rebased": "built",
         "checks_passed": "verified",
         "checks_failed": "failed",
+        "tests_ready": "tested",
+        "tests_failed": "failed",
         "repair_exhausted": "failed",
         "review_ready": "reviewed",
         "review_blocked": "changes_requested",

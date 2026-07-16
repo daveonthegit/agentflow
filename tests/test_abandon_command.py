@@ -17,13 +17,13 @@ try:
     from tests.test_advance_command import (
         agentflow,
         create_profiled_run,
-        create_verified_run,
+        create_tested_run,
     )
 except ImportError:  # unittest discover imports test modules without a package
     from test_advance_command import (
         agentflow,
         create_profiled_run,
-        create_verified_run,
+        create_tested_run,
     )
 
 
@@ -239,7 +239,7 @@ class AbandonCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
-            data_dir, run_id = create_verified_run(temp_path, environment)
+            data_dir, run_id = create_tested_run(temp_path, environment)
             fixture_path = temp_path / "adapter-fixture.json"
             fixture_path.write_text(
                 json.dumps({"reviewer": {"disposition": "approve", "findings": []}}),

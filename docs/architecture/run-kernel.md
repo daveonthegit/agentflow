@@ -10,7 +10,7 @@ unless those gates are explicitly satisfied.
 
 ```bash
 agentflow init
-agentflow profile --check "<command>"
+agentflow profile --check "<command>" [--test-path <repo-relative path>]
 agentflow start "<task summary>"
 agentflow run <task.json>
 agentflow advance <run-id> [--adapter claude|cursor|codex] [--model <model>] [--claim-lease-seconds <seconds>]
@@ -33,10 +33,43 @@ agentflow rebase <run-id>
   direct human starts unless supplied by imported task JSON. Repeatable
   `--acceptance-criterion` flags populate criteria on `start`.
 - `profile` creates the target-owned repository map, check commands, and source
-  fingerprint at `.agentflow/repository-profile.json`.
-- `advance` selects the next stage from replayed state. Planner, builder, and
-  reviewer stages require an adapter. The built-to-verified transition executes
-  profile checks directly without a model. The Claude adapter invokes the
+  fingerprint at `.agentflow/repository-profile.json`. Repeatable optional
+  `--test-path <repo-relative path>` flags record the directories or files the
+  Tester Agent Role may modify: each value must be a non-empty, repository-relative
+  path that does not escape the repository, and the values are normalized,
+  de-duplicated, and stored sorted as `test_paths` (schema stays version 1).
+  Regenerating the profile without `--test-path` records no `test_paths` — there
+  is no carry-forward merge.
+- `advance` selects the next stage from replayed state. Planner, builder, tester,
+  and reviewer stages require an adapter. The built-to-verified transition executes
+  profile checks directly without a model.
+- From `verified`, `advance` runs the Tester Agent Role exactly once per candidate
+  generation (there is no path back to `verified` without a new build, repair, or
+  rebase, so the tester cannot loop). The tester reads `test_paths` from the
+  Workspace's committed, integrity-checked profile — never from the Target
+  Repository root — and fails deterministically when that profile declares no
+  `test_paths`, directing the operator to regenerate the profile with
+  `--test-path`, commit it, and start a new Run. The kernel (not the prompt)
+  enforces the tester's bounds: after the invocation the tester report's
+  `files_changed` must exactly equal the authoritative dirty-path set and every
+  changed path must be at or under a declared test path, or the stage fails hard
+  naming the offending paths and appends no state-advancing event. Let G be the
+  candidate generation at invocation; the tester commit does not change G. If the
+  tester wrote no files it appends `tests_ready` carrying the unchanged
+  `candidate_sha` and a `checks_artifact` reference to the existing
+  `checks-<G>.json` (checks are not re-run) and becomes `tested`. If it wrote
+  tests it commits `Agentflow run <run-id> tests <G>`, re-runs the authoritative
+  profile checks against the new candidate into `checks-<G>-post-tests.json`
+  (never overwriting `checks-<G>.json`), and on pass appends `tests_ready` (new
+  `candidate_sha`, post-tests `checks_artifact`) → `tested`, or on failure appends
+  `tests_failed` (new `candidate_sha`, post-tests `checks_artifact`, and the
+  tester findings) → `failed`, exactly like `checks_failed`. Tester findings are
+  evidence only: a blocker finding without a failing test never changes state.
+- From `tested`, `advance` runs the reviewer. It resolves the candidate SHA and
+  check evidence from the latest `tests_ready` event (which always carries both),
+  requires the Workspace to be clean at that tester-produced candidate, passes the
+  tester findings into the review request, and on approval binds `awaiting_human`
+  to that SHA. The Claude adapter invokes the
   `claude` CLI with `--output-format stream-json --verbose` (partial-message
   streaming is not requested) while keeping its `--json-schema` structured
   output, resolves each role's model exactly once per invocation, and appends
@@ -47,7 +80,7 @@ agentflow rebase <run-id>
   structured output. The fake and Codex adapters produce no transcript.
 - The Cursor adapter invokes the `agent` CLI in headless `stream-json` mode,
   using `ask` mode for read-only planner and reviewer stages and `--force
-  --sandbox enabled` for the builder. Because the Cursor CLI has no documented
+  --sandbox enabled` for the writing builder and tester stages. Because the Cursor CLI has no documented
   schema-constrained output option, the adapter prompts for one JSON object,
   extracts a candidate object from result text that may include progress prose,
   validates it locally against the role contract, and permits at most two
@@ -87,7 +120,7 @@ agentflow rebase <run-id>
   `recorded` routing from `models.json` (an empty object when nothing is
   recorded) and its `suggested` defaults. With `--adapter claude` or
   `--adapter cursor` and repeatable `--set role=model`, it validates role names
-  against `planner`, `builder`, and `reviewer`, merges the choices into
+  against `planner`, `builder`, `reviewer`, and `tester`, merges the choices into
   `models.json`, and prints the updated routing in the same shape.
   `models.json` stores the user's recorded preference only; per-invocation
   provenance lives in the event log.
@@ -173,6 +206,8 @@ an override so they cannot contaminate a developer's real runs.
 │       ├── plan.json
 │       ├── build-report-<n>.json
 │       ├── checks-<n>.json
+│       ├── checks-<n>-post-tests.json
+│       ├── tester-report-<n>.json
 │       ├── review-<n>.json
 │       ├── repair-report-<n>.json
 │       ├── <role>[-<n>]-transcript.jsonl
@@ -196,6 +231,8 @@ New events contain a one-based `sequence` equal to their line number in
 | `candidate_rebased` | `built` |
 | `checks_passed` | `verified` |
 | `checks_failed` | `failed` |
+| `tests_ready` | `tested` |
+| `tests_failed` | `failed` |
 | `repair_exhausted` | `failed` |
 | `review_blocked` | `changes_requested` |
 | `review_ready` | `reviewed` |
@@ -205,11 +242,12 @@ New events contain a one-based `sequence` equal to their line number in
 | `human_rejected` | `human_rejected` |
 | `run_abandoned` | `abandoned` |
 
-`plan_ready`, `build_ready`, `repair_ready`, `review_ready`, and `review_blocked`
-carry a `model` field naming the resolved model whenever the invoking adapter
-routes models (currently the Claude and Cursor adapters); the deterministic fake
-and Codex adapters record no `model` field. The same events also carry a
-`transcript` field naming the role transcript evidence file whenever the
+`plan_ready`, `build_ready`, `repair_ready`, `tests_ready`, `tests_failed`,
+`review_ready`, and `review_blocked` carry a `model` field naming the resolved
+model whenever the invoking adapter routes models (currently the Claude and Cursor
+adapters); the deterministic fake and Codex adapters record no `model` field. The
+same events also carry a `transcript` field naming the role transcript evidence
+file whenever the
 invoking adapter produced one (currently the Claude and Cursor adapters); the
 fake and Codex adapters produce no transcript and therefore no `transcript`
 field.
@@ -237,6 +275,12 @@ new candidate generation — `build_ready`, `repair_ready`, and
 pre-rebase evidence. Legacy flat names (`plan.json`, `checks.json`,
 `review.json`, `build-report.json`) remain readable when an event's `artifact`
 field points at them.
+`tests_ready` and `tests_failed` always carry both a `candidate_sha` and a
+`checks_artifact` reference, and both are candidate-producing event types, so
+downstream stages resolve the latest candidate from them after the tester runs.
+Because the tester commit deliberately does not advance the candidate generation,
+post-tests checks land in `checks-<G>-post-tests.json` for the same generation G
+while the reviewer for that generation still writes `review-<G>.json`.
 
 ## Task Spec snapshot
 
@@ -255,7 +299,7 @@ fields:
 Unknown Task Spec fields are rejected. Legacy summary-only `task.json` files
 remain replayable. Material upstream task change requires a new Run; there is
 no snapshot refresh mutation. The complete frozen task object is passed
-unchanged to planner, builder, and reviewer stages.
+unchanged to planner, builder, tester, and reviewer stages.
 
 ## Check evidence enrichment
 
@@ -294,10 +338,12 @@ the only claim authority: no lock file or second store of claim state exists.
   the released or expired claim's `holder` and `expires_at`.
 - A second `advance` on the same Run while an unexpired claim is active fails
   with an error naming the holder and expiry, and appends nothing.
-- The default lease is `DEFAULT_CLAIM_LEASE_SECONDS = 7200`, which strictly
-  exceeds the 3600-second adapter subprocess timeout so a live stage cannot
-  lose its claim while its adapter is still permitted to run. `advance
-  --claim-lease-seconds` overrides the lease for one invocation.
+- The default lease is `DEFAULT_CLAIM_LEASE_SECONDS = 14400`, which must strictly
+  exceed the adapter subprocess timeout plus the authoritative check budget for a
+  single stage: the tester stage runs an adapter invocation (3600-second timeout)
+  and then re-runs the profile checks (1800-second per-command timeout) within one
+  claim, so a live stage cannot lose its claim while its work is permitted to run.
+  `advance --claim-lease-seconds` overrides the lease for one invocation.
 - An expired claim no longer blocks: the next `advance` appends
   `claim_expired` evidence and then acquires its own claim. A stage that
   legitimately exceeds its lease therefore relies on expired-claim recovery,
@@ -330,9 +376,14 @@ the only claim authority: no lock file or second store of claim state exists.
 - Each Run receives a unique branch and Workspace.
 - The Run records a fresh target-owned Repository Profile by reference, hash,
   and source fingerprint instead of copying project knowledge into Agentflow.
-- Planner, builder, and reviewer outputs must satisfy strict role contracts.
+- Planner, builder, tester, and reviewer outputs must satisfy strict role
+  contracts.
 - The builder's authoritative Git diff must be a subset of planned paths and
   must equal its reported file list.
+- The tester may modify only files at or under the profile's declared
+  `test_paths` and never production code; its authoritative Git diff must equal
+  its reported file list, and its prose findings are evidence only — only failing
+  tests the authoritative checks run change Run State.
 - Authoritative checks execute outside model reasoning against the candidate
   SHA, must leave its Workspace clean, and their raw results become Run
   Evidence.
@@ -364,16 +415,18 @@ the only claim authority: no lock file or second store of claim state exists.
 - Only the Claude, Cursor, Codex, and deterministic fake provider adapters
   exist.
 - The Claude adapter limits planner and reviewer roles to read-only tools, but
-  its builder role relies on role instructions and the kernel's planned-path
-  diff enforcement rather than an operating-system sandbox.
+  its builder and tester roles rely on role instructions and the kernel's
+  path-scope diff enforcement rather than an operating-system sandbox.
 - The Cursor CLI has no documented JSON Schema output flag or per-invocation
   granular tool allowlist. The Cursor adapter therefore uses read-only `ask`
-  mode for planner and reviewer, requests the CLI sandbox for the builder, and
-  relies on prompt-plus-local-validation with a two-attempt bound for output
-  contracts.
-- No tester, merger, or deployment adapter exists. Bounded repair from
-  `changes_requested` is implemented; a separate tester role and builder-test
-  retry loop are not.
+  mode for planner and reviewer, requests the CLI sandbox for the builder and
+  tester, and relies on prompt-plus-local-validation with a two-attempt bound for
+  output contracts.
+- The Tester Agent Role runs after authoritative checks pass and before review,
+  writing tests only under the profile's declared `test_paths`. The repair loop
+  from a `tests_failed` state is deferred: a failing tester test currently ends
+  the Run at `failed`, exactly like `checks_failed`. No merger or deployment
+  adapter exists.
 - Worktree and Workspace cleanup is not implemented: `abandon` records the
   terminal state but leaves the Run's Workspace and branch on disk.
 - `advance` performs one stage per invocation; explicit plan approval and

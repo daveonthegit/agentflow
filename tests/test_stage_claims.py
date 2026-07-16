@@ -18,13 +18,13 @@ try:
     from tests.test_advance_command import (
         agentflow,
         create_profiled_run,
-        create_verified_run,
+        create_tested_run,
     )
 except ImportError:  # unittest discover imports test modules without a package
     from test_advance_command import (
         agentflow,
         create_profiled_run,
-        create_verified_run,
+        create_tested_run,
     )
 
 
@@ -190,7 +190,7 @@ class StageClaimTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
-            data_dir, run_id = create_verified_run(temp_path, environment)
+            data_dir, run_id = create_tested_run(temp_path, environment)
             fixture_path = write_reviewer_fixture(temp_path)
             reviewed = agentflow(
                 "advance",
@@ -259,7 +259,7 @@ class StageClaimTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
-            data_dir, run_id = create_verified_run(temp_path, environment)
+            data_dir, run_id = create_tested_run(temp_path, environment)
             fixture_path = write_reviewer_fixture(temp_path)
             reviewed = agentflow(
                 "advance",
@@ -278,8 +278,8 @@ class StageClaimTests(unittest.TestCase):
             events = read_events(data_dir, run_id)
             acquired = [e for e in events if e["type"] == "claim_acquired"]
             released = [e for e in events if e["type"] == "claim_released"]
-            self.assertEqual(len(acquired), 4)
-            self.assertEqual(len(released), 4)
+            self.assertEqual(len(acquired), 5)
+            self.assertEqual(len(released), 5)
 
             approved = agentflow(
                 "approve",

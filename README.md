@@ -91,25 +91,35 @@ and profiled source are identical.
 ```bash
 cd /path/to/your-project
 agentflow init
-agentflow profile --check "your formatter command" --check "your test command"
+agentflow profile --check "your formatter command" --check "your test command" \
+  --test-path tests
 git add .agentflow/repository-profile.json
 git commit -m "Add Agentflow repository profile"
 agentflow start "Add a health endpoint"
 ```
 
+Declare `--test-path` for every directory or file the Tester Agent Role may
+touch; the tester stage refuses to run against a profile that records no
+`test_paths`.
+
 The command snapshots the Task Spec, repository path, and exact base commit;
 creates a unique Git branch and external worktree; and returns a run identifier
 in the `ready` state.
 
-Advance each stage from any process. Planning, building, and review need an
-adapter; authoritative verification does not:
+Advance each stage from any process. Planning, building, testing, and review
+need an adapter; authoritative verification does not:
 
 ```bash
 agentflow advance <run-id> --adapter codex  # ready -> planned
 agentflow advance <run-id> --adapter codex  # planned -> built
 agentflow advance <run-id>                  # built -> verified or failed
-agentflow advance <run-id> --adapter codex  # verified -> awaiting_human
+agentflow advance <run-id> --adapter codex  # verified -> tested or failed
+agentflow advance <run-id> --adapter codex  # tested -> awaiting_human
 ```
+
+The tester writes tests only under the declared `test_paths`; when it adds a
+test the authoritative checks re-run against the new commit, so a failing test
+ends the Run at `failed`.
 
 Inspect the replayed state at any point:
 
@@ -144,6 +154,7 @@ The kernel owns run identity, immutable input snapshots, Repository Profile
 integrity, Git worktree isolation, schema validation, allowed paths,
 authoritative checks, append-only events, state replay, and approval bound to an
 exact candidate SHA. Claude, Cursor, Codex, and deterministic fake adapters
-support planner, builder, and reviewer roles; Claude and Cursor additionally
-provide live transcripts and model routing. Tester, bounded repair, merge,
-post-merge verification, and deployment are later slices.
+support planner, builder, tester, and reviewer roles; Claude and Cursor
+additionally provide live transcripts and model routing. The bounded builder-fix
+retry loop from a failing tester test, merge, post-merge verification, and
+deployment are later slices.

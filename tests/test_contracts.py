@@ -7,9 +7,11 @@ from pathlib import Path
 from agentflow.contracts import (
     ContractError,
     MIN_PLAN_TEXT_LENGTH,
+    contract_schema,
     validate_plan,
     validate_planned_paths,
     validate_task_spec,
+    validate_tester_report,
 )
 
 
@@ -138,6 +140,66 @@ class PlanContractTests(unittest.TestCase):
             valid_plan(files_to_modify=["missing-dir/new-file.txt"])
         )
         self.assertEqual(plan["files_to_modify"], ["missing-dir/new-file.txt"])
+
+
+def valid_tester_report(**overrides):
+    report = {
+        "summary": "Probed the candidate with an added regression test.",
+        "files_changed": ["tests/test_health.py"],
+        "findings": [
+            {
+                "file": "tests/test_health.py",
+                "message": "Covers the previously untested error path",
+                "severity": "note",
+            }
+        ],
+    }
+    report.update(overrides)
+    return report
+
+
+class TesterContractTests(unittest.TestCase):
+    def test_accepts_a_well_formed_report_with_empty_arrays(self) -> None:
+        report = validate_tester_report(
+            valid_tester_report(files_changed=[], findings=[])
+        )
+        self.assertEqual(report["files_changed"], [])
+        self.assertEqual(report["findings"], [])
+
+    def test_accepts_a_global_finding_with_null_file(self) -> None:
+        report = valid_tester_report(
+            findings=[{"file": None, "message": "global note", "severity": "minor"}]
+        )
+        self.assertEqual(validate_tester_report(report)["findings"][0]["file"], None)
+
+    def test_rejects_unknown_fields(self) -> None:
+        with self.assertRaisesRegex(ContractError, "summary, files_changed, findings"):
+            validate_tester_report(valid_tester_report(extra=True))
+
+    def test_rejects_empty_summary(self) -> None:
+        with self.assertRaisesRegex(ContractError, "summary"):
+            validate_tester_report(valid_tester_report(summary="  "))
+
+    def test_rejects_non_string_changed_paths(self) -> None:
+        with self.assertRaisesRegex(ContractError, "files_changed"):
+            validate_tester_report(valid_tester_report(files_changed=["ok", 3]))
+
+    def test_rejects_invalid_finding_severity(self) -> None:
+        with self.assertRaisesRegex(ContractError, "severity"):
+            validate_tester_report(
+                valid_tester_report(
+                    findings=[
+                        {"file": None, "message": "x", "severity": "critical"}
+                    ]
+                )
+            )
+
+    def test_schema_matches_required_shape(self) -> None:
+        schema = contract_schema("tester")
+        self.assertEqual(
+            sorted(schema["required"]), ["files_changed", "findings", "summary"]
+        )
+        self.assertFalse(schema["additionalProperties"])
 
 
 class TaskSpecContractTests(unittest.TestCase):

@@ -39,6 +39,12 @@ def main() -> int:
     init_parser.add_argument("repository", nargs="?", type=Path, default=Path.cwd())
     profile_parser = subcommands.add_parser("profile")
     profile_parser.add_argument("--check", action="append", required=True)
+    profile_parser.add_argument(
+        "--test-path",
+        action="append",
+        default=[],
+        dest="test_paths",
+    )
     start_parser = subcommands.add_parser("start")
     start_parser.add_argument("summary")
     start_parser.add_argument(
@@ -115,6 +121,7 @@ def main() -> int:
         result = create_repository_profile(
             repository=Path.cwd(),
             checks=args.check,
+            test_paths=args.test_paths,
         )
         print(
             json.dumps(

@@ -20,7 +20,10 @@ proposal and CLI state and recorded evidence as fact.
    instructions.
 4. If `.agentflow/repository-profile.json` does not exist or source changes
    make it stale, run `agentflow profile --check "<authoritative command>"` for
-   each deterministic check, then commit the profile in the Target Repository.
+   each deterministic check plus a repeatable `--test-path <repo-relative path>`
+   for every directory or file the tester may modify, then commit the profile in
+   the Target Repository. The tester stage refuses to run against a profile that
+   records no `test_paths`.
 5. Follow the repository's `AGENTS.md` and keep its project-specific knowledge
    in that repository. Do not copy it into the Agentflow source repository.
 
@@ -52,8 +55,8 @@ Before the first model-requiring `advance` with a given adapter, run
 `agentflow models` and inspect its recorded routing. When no routing is
 recorded for that adapter, or the model provider has changed since it was
 recorded, ask the user which model to use for each role (planner, builder,
-reviewer) while presenting the suggested defaults from the command's output,
-then record the answer:
+tester, reviewer) while presenting the suggested defaults from the command's
+output, then record the answer:
 
 ```bash
 agentflow models                                             # inspect routing
@@ -73,16 +76,25 @@ Adapter (`claude`, `cursor`, or `codex`) for the stages that require one:
 agentflow advance <run-id> --adapter cursor  # plan
 agentflow advance <run-id> --adapter cursor  # build and commit candidate
 agentflow advance <run-id>                   # authoritative checks
+agentflow advance <run-id> --adapter cursor  # tester probes under test_paths
 agentflow advance <run-id> --adapter cursor  # read-only review
 ```
 
+The tester (from `verified`) may write tests only under the profile's declared
+`test_paths`. If it adds a test it commits a new candidate and re-runs the
+authoritative checks, reaching `tested` on pass or terminal `failed` on failure;
+if it changes nothing it reaches `tested` against the unchanged candidate. Its
+prose findings are recorded and shown to the reviewer but never gate the Run on
+their own.
+
 When status reports `changes_requested`, advance again with a builder adapter to
 repair (at most two repairs after the initial build). Each repair commits a new
-candidate and re-enters `built` so checks and review must rerun:
+candidate and re-enters `built` so checks, tester, and review must rerun:
 
 ```bash
 agentflow advance <run-id> --adapter cursor  # repair from changes_requested
 agentflow advance <run-id>                   # re-run authoritative checks
+agentflow advance <run-id> --adapter cursor  # re-run tester
 agentflow advance <run-id> --adapter cursor  # re-run read-only review
 ```
 
@@ -128,5 +140,6 @@ Rejected Runs cannot advance, approve, abandon, rebase, or be rejected again.
 - Never bypass a failed or unavailable gate by editing run evidence manually.
 - Never let an agent's prose override command exit status or test results.
 - Require explicit human approval before merge.
-- Do not imply that unimplemented tester, merge, post-merge, or deployment
-  stages have executed.
+- Do not imply that unimplemented merge, post-merge, or deployment stages have
+  executed, and do not claim a tester ran unless Agentflow recorded a
+  `tests_ready` or `tests_failed` event.

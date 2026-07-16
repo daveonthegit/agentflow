@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shlex
 import subprocess
 
@@ -57,8 +57,29 @@ def _source_fingerprint(repository: Path, files: list[Path]) -> str:
     return digest.hexdigest()
 
 
+def _validated_test_paths(test_paths: list[str]) -> list[str]:
+    """Normalize declared test paths for the profile.
+
+    Each value must be a non-empty, repository-relative path that does not
+    escape the repository. Values are normalized, de-duplicated, and returned
+    sorted so the profile is deterministic regardless of flag order.
+    """
+    validated: set[str] = set()
+    for raw in test_paths:
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError("Repository Profile test paths must not be empty")
+        candidate = PurePosixPath(raw.strip())
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise ValueError(
+                "Repository Profile test paths must be repository-relative "
+                "and must not escape the repository"
+            )
+        validated.add(str(candidate))
+    return sorted(validated)
+
+
 def create_repository_profile(
-    *, repository: Path, checks: list[str]
+    *, repository: Path, checks: list[str], test_paths: list[str] | None = None
 ) -> CreatedProfile:
     repository = _repository_root(repository)
     files = _repository_files(repository)
@@ -77,6 +98,8 @@ def create_repository_profile(
         "schema_version": 1,
         "source_fingerprint": source_fingerprint,
     }
+    if test_paths:
+        profile["test_paths"] = _validated_test_paths(test_paths)
     profile_path = repository / PROFILE_RELATIVE_PATH
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     profile_path.write_text(

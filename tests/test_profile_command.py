@@ -75,6 +75,120 @@ class ProfileCommandTests(unittest.TestCase):
             self.assertEqual(profile["map"]["documentation"], ["README.md"])
             self.assertEqual(len(profile["source_fingerprint"]), hashlib.sha256().digest_size * 2)
 
+    def test_profile_records_sorted_test_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir)
+            subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.email", "agentflow@example.test"],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Agentflow Test"],
+                cwd=repository,
+                check=True,
+            )
+            (repository / "README.md").write_text("# Target\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repository, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "Initial commit"],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+            )
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+
+            with_paths = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "agentflow",
+                    "profile",
+                    "--check",
+                    "python3 -m unittest discover -s tests -v",
+                    "--test-path",
+                    "tests/unit",
+                    "--test-path",
+                    "tests/",
+                ],
+                cwd=repository,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(with_paths.returncode, 0, with_paths.stderr)
+            profile_path = repository / ".agentflow" / "repository-profile.json"
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            # Trailing slash normalized and values recorded sorted.
+            self.assertEqual(profile["test_paths"], ["tests", "tests/unit"])
+            self.assertEqual(profile["schema_version"], 1)
+
+            # Regenerating without the flag records no test_paths (no carry-forward).
+            regenerated = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "agentflow",
+                    "profile",
+                    "--check",
+                    "python3 -m unittest discover -s tests -v",
+                ],
+                cwd=repository,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(regenerated.returncode, 0, regenerated.stderr)
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            self.assertNotIn("test_paths", profile)
+
+    def test_profile_rejects_escaping_test_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir)
+            subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.email", "agentflow@example.test"],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Agentflow Test"],
+                cwd=repository,
+                check=True,
+            )
+            (repository / "README.md").write_text("# Target\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repository, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "Initial commit"],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+            )
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+
+            rejected = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "agentflow",
+                    "profile",
+                    "--check",
+                    "python3 -m unittest discover -s tests -v",
+                    "--test-path",
+                    "../escape",
+                ],
+                cwd=repository,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("must be repository-relative", rejected.stderr)
+
     def test_start_records_profile_reference_integrity_and_freshness(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

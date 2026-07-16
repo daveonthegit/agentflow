@@ -16,13 +16,13 @@ try:
     from tests.test_advance_command import (
         agentflow,
         create_profiled_run,
-        create_verified_run,
+        create_tested_run,
     )
 except ImportError:
     from test_advance_command import (
         agentflow,
         create_profiled_run,
-        create_verified_run,
+        create_tested_run,
     )
 
 
@@ -81,7 +81,7 @@ def await_human(
     temp_path: Path,
     environment: dict[str, str],
 ) -> tuple[Path, str, str]:
-    data_dir, run_id = create_verified_run(temp_path, environment)
+    data_dir, run_id = create_tested_run(temp_path, environment)
     fixture_path = temp_path / "adapter-fixture.json"
     fixture_path.write_text(
         json.dumps(

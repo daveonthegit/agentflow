@@ -28,8 +28,8 @@ Every behavior statement carries one of three classifications:
 
 - **Implemented.** A Run captures one immutable Task Spec and one exact base
   commit, starts only from a clean Target Repository checkout, and proceeds
-  through planner, builder, checks, and reviewer stages driven by replayed
-  state. `advance` performs one stage per invocation. The Task Spec may include
+  through planner, builder, checks, tester, and reviewer stages driven by
+  replayed state. `advance` performs one stage per invocation. The Task Spec may include
   optional `source` (`provider`, `work_item_id`, `captured_at` with an explicit
   timezone, and importer-supplied `content_hash`) and `acceptance_criteria`
   (trimmed unique non-empty strings). New Runs always store
@@ -39,10 +39,12 @@ Every behavior statement carries one of three classifications:
   upstream task change requires a new Run — there is no snapshot refresh.
   `status` exposes `source` and `acceptance_criteria` only when present and
   non-empty; `list` stays concise without those fields. The complete frozen
-  task object is passed to planner, builder, and reviewer.
-- **Implemented.** Planner, builder, and reviewer outputs must satisfy strict
-  versioned role contracts; the builder's authoritative Git diff must be a
-  subset of planned paths and must equal its reported file list.
+  task object is passed to planner, builder, tester, and reviewer.
+- **Implemented.** Planner, builder, tester, and reviewer outputs must satisfy
+  strict versioned role contracts; the builder's authoritative Git diff must be a
+  subset of planned paths and must equal its reported file list, and the tester's
+  authoritative Git diff must equal its reported file list and stay at or under
+  the profile's declared `test_paths`.
 - **Implemented.** A fresh process can replay a Run's events and continue from
   the recorded state.
 - **Implemented.** Runs are enumerable: `list` projects every Run in Agentflow
@@ -82,9 +84,19 @@ Every behavior statement carries one of three classifications:
   `plan_rejected`; from `awaiting_human` it appends terminal `human_rejected`
   bound to the candidate SHA. Rejection conversation text is never evidence.
   Rejected Runs cannot advance, approve, abandon, rebase, or be rejected again.
-- **Target.** Explicit plan approval, a tester role, bounded builder-fix retry
-  loops, a constrained Merge Agent, and Post-Merge Verification. Merge and
-  deployment remain manual after approval until these exist.
+- **Implemented.** Adversarial Tester Agent Role between checks and review: from
+  `verified`, `advance` runs the tester exactly once per candidate generation. It
+  may write only files at or under the profile's declared `test_paths` and never
+  production code, enforced by the kernel against the authoritative Git diff. If
+  it writes tests it commits a new candidate and re-runs the authoritative checks
+  into a distinct `checks-<G>-post-tests.json`, reaching `tested` on pass and the
+  terminal `failed` on failure; if it writes nothing it reaches `tested` against
+  the unchanged candidate without re-running checks. Its prose findings are
+  recorded and surfaced to the reviewer but never gate the workflow on their own.
+  A run lacking declared `test_paths` fails the stage deterministically.
+- **Target.** Explicit plan approval, a bounded builder-fix retry loop from
+  tester failures, a constrained Merge Agent, and Post-Merge Verification. Merge
+  and deployment remain manual after approval until these exist.
 - **Target.** Reconciliation and Workspace cleanup after abandonment.
 
 ## Evidence
@@ -186,11 +198,12 @@ Every behavior statement carries one of three classifications:
   for tests. Their executables are overridable via `AGENTFLOW_CLAUDE`,
   `AGENTFLOW_CURSOR`, and `AGENTFLOW_CODEX`. Changing an adapter must not
   change workflow state semantics, verification rules, or approval authority.
-- **Implemented.** Planner and reviewer roles run read-only; the builder role
-  is constrained by role instructions and the kernel's planned-path diff
-  enforcement. The Cursor builder additionally requests the Cursor CLI's
-  sandbox while auto-approving operations; the Claude builder does not provide
-  an operating-system sandbox.
+- **Implemented.** Planner and reviewer roles run read-only; the builder and
+  tester roles are constrained by role instructions and the kernel's path-scope
+  diff enforcement (planned paths for the builder, declared `test_paths` for the
+  tester). The Cursor builder and tester additionally request the Cursor CLI's
+  sandbox while auto-approving operations; the Claude adapter does not provide
+  an operating-system sandbox for its writing roles.
 - **Implemented.** Cursor output is treated as untrusted model text because the
   Cursor CLI has no documented JSON Schema output flag. The adapter prompts for
   one JSON object, extracts a candidate object from result text that may retain
@@ -203,10 +216,12 @@ Every behavior statement carries one of three classifications:
   `advance --model`, then the adapter's `AGENTFLOW_<ADAPTER>_<ROLE>_MODEL`
   environment variable, then recorded routing, then suggested defaults. The
   resolved model is recorded on the stage's `plan_ready`, `build_ready`,
-  `repair_ready`, `review_ready`, or `review_blocked` event. The fake and Codex
-  adapters route no models and record no `model` field.
+  `repair_ready`, `tests_ready`, `tests_failed`, `review_ready`, or
+  `review_blocked` event. The suggested defaults cover the tester role for both
+  adapters; the fake and Codex adapters route no models and record no `model`
+  field.
 - **Implemented.** Live role observability for the Claude and Cursor adapters:
-  each planner, builder, and reviewer stage streams the provider's output
+  each planner, builder, tester, and reviewer stage streams the provider's output
   (`stream-json`) to a tailable `runs/<run-id>/<role>-transcript.jsonl`
   evidence file referenced from the stage event, and the read-only `watch`
   command follows a Run's events and growing transcript until it reaches a

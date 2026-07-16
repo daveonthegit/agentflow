@@ -175,6 +175,32 @@ def contract_schema(role: str) -> dict[str, Any]:
             "required": ["disposition", "findings"],
             "type": "object",
         }
+    if role == "tester":
+        return {
+            "additionalProperties": False,
+            "properties": {
+                "summary": {"type": "string"},
+                "files_changed": {"items": {"type": "string"}, "type": "array"},
+                "findings": {
+                    "items": {
+                        "additionalProperties": False,
+                        "properties": {
+                            "file": {"type": ["string", "null"]},
+                            "message": {"type": "string"},
+                            "severity": {
+                                "enum": ["blocker", "major", "minor", "note"],
+                                "type": "string",
+                            },
+                        },
+                        "required": ["file", "message", "severity"],
+                        "type": "object",
+                    },
+                    "type": "array",
+                },
+            },
+            "required": ["summary", "files_changed", "findings"],
+            "type": "object",
+        }
     raise ValueError(f"no output contract for role {role}")
 
 
@@ -282,6 +308,46 @@ def validate_builder_report(value: Any) -> dict[str, Any]:
             isinstance(item, str) for item in value[field]
         ):
             raise ContractError(f"builder report {field} must be a list of strings")
+    return value
+
+
+def validate_tester_report(value: Any) -> dict[str, Any]:
+    """Validate a Tester Agent Role output, version 1.
+
+    ``findings`` are evidence only: they are recorded and surfaced to the
+    reviewer but never gate the workflow. Only failing tests the tester writes
+    (run by the authoritative checks) change Run State. ``file`` may be null for
+    a global finding, consistent with the reviewer contract.
+    """
+    if not isinstance(value, dict) or set(value) != {
+        "summary",
+        "files_changed",
+        "findings",
+    }:
+        raise ContractError(
+            "tester report must contain summary, files_changed, findings"
+        )
+    if not isinstance(value["summary"], str) or not value["summary"].strip():
+        raise ContractError("tester report summary must be a non-empty string")
+    if not isinstance(value["files_changed"], list) or not all(
+        isinstance(path, str) and path for path in value["files_changed"]
+    ):
+        raise ContractError("tester report files_changed must be a list of paths")
+    if not isinstance(value["findings"], list):
+        raise ContractError("tester report findings must be a list")
+    for finding in value["findings"]:
+        if not isinstance(finding, dict) or set(finding) != {
+            "file",
+            "message",
+            "severity",
+        }:
+            raise ContractError("each tester finding must contain file, message, severity")
+        if finding["severity"] not in {"blocker", "major", "minor", "note"}:
+            raise ContractError("tester finding severity is invalid")
+        if not isinstance(finding["message"], str) or not finding["message"]:
+            raise ContractError("tester finding message must be non-empty")
+        if finding["file"] is not None and not isinstance(finding["file"], str):
+            raise ContractError("tester finding file must be a path or null")
     return value
 
 

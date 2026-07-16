@@ -27,10 +27,80 @@ def agentflow(
     )
 
 
+# A tester fixture that writes no files: the fake adapter returns this report
+# directly (no "output"/"writes" wrapping), so the tester stage records it and
+# advances to `tested` without re-running checks.
+TESTER_NO_CHANGE_FIXTURE = {
+    "tester": {
+        "summary": "No additional tests were required for this candidate.",
+        "files_changed": [],
+        "findings": [],
+    }
+}
+
+# A check that runs every Python file the tester may add under tests/, so a
+# passing test keeps checks green and a failing test turns them red. Before the
+# tester writes anything the directory is empty, so it is a no-op at built.
+TEST_RUNNING_CHECK = (
+    "python3 -c \"import glob, subprocess, sys; "
+    "[subprocess.run([sys.executable, f], check=True) "
+    "for f in sorted(glob.glob('tests/*.py'))]\""
+)
+
+TESTER_PASSING_FIXTURE = {
+    "tester": {
+        "output": {
+            "summary": "Added a passing regression test under the test paths.",
+            "files_changed": ["tests/test_health.py"],
+            "findings": [],
+        },
+        "writes": {"tests/test_health.py": "print('health endpoint documented')\n"},
+    }
+}
+
+TESTER_FAILING_FIXTURE = {
+    "tester": {
+        "output": {
+            "summary": "Added a failing test exposing a suspected defect.",
+            "files_changed": ["tests/test_regression.py"],
+            "findings": [
+                {
+                    "file": "tests/test_regression.py",
+                    "message": "The candidate does not satisfy the acceptance criteria",
+                    "severity": "blocker",
+                }
+            ],
+        },
+        "writes": {"tests/test_regression.py": "raise SystemExit(1)\n"},
+    }
+}
+
+TESTER_OUT_OF_PATH_FIXTURE = {
+    "tester": {
+        "output": {
+            "summary": "Attempted to edit production code.",
+            "files_changed": ["README.md"],
+            "findings": [],
+        },
+        "writes": {"README.md": "# Target\n\nTester touched production code.\n"},
+    }
+}
+
+
+def _events(data_dir: Path, run_id: str) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in (data_dir / "runs" / run_id / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+
+
 def create_profiled_run(
     temp_path: Path,
     environment: dict[str, str],
     check: str = "python3 -c \"print('checks passed')\"",
+    test_paths: list[str] | None = ("tests",),
 ) -> tuple[Path, Path, str]:
     repository = temp_path / "target"
     data_dir = temp_path / "agentflow-home"
@@ -54,10 +124,11 @@ def create_profiled_run(
         check=True,
         capture_output=True,
     )
+    profile_arguments = ["profile", "--check", check]
+    for test_path in test_paths or ():
+        profile_arguments.extend(["--test-path", test_path])
     profiled = agentflow(
-        "profile",
-        "--check",
-        check,
+        *profile_arguments,
         cwd=repository,
         environment=environment,
     )
@@ -91,8 +162,11 @@ def create_built_run(
     temp_path: Path,
     environment: dict[str, str],
     check: str = "python3 -c \"print('checks passed')\"",
+    test_paths: list[str] | None = ("tests",),
 ) -> tuple[Path, str]:
-    _, data_dir, run_id = create_profiled_run(temp_path, environment, check)
+    _, data_dir, run_id = create_profiled_run(
+        temp_path, environment, check, test_paths
+    )
     fixture_path = temp_path / "adapter-fixture.json"
     fixture_path.write_text(
         json.dumps(
@@ -165,8 +239,10 @@ def create_built_run(
 def create_verified_run(
     temp_path: Path,
     environment: dict[str, str],
+    check: str = "python3 -c \"print('checks passed')\"",
+    test_paths: list[str] | None = ("tests",),
 ) -> tuple[Path, str]:
-    data_dir, run_id = create_built_run(temp_path, environment)
+    data_dir, run_id = create_built_run(temp_path, environment, check, test_paths)
     verified = agentflow(
         "advance",
         run_id,
@@ -177,6 +253,49 @@ def create_verified_run(
     )
     if verified.returncode != 0:
         raise AssertionError(verified.stderr)
+    return data_dir, run_id
+
+
+def advance_tester(
+    temp_path: Path,
+    data_dir: Path,
+    run_id: str,
+    environment: dict[str, str],
+    fixture: dict | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Advance a verified Run through the tester stage.
+
+    The default fixture writes no files, so the stage reaches `tested` without
+    re-running checks. Callers exercising the writing paths pass their own.
+    """
+    fixture_path = temp_path / "tester-fixture.json"
+    fixture_path.write_text(
+        json.dumps(TESTER_NO_CHANGE_FIXTURE if fixture is None else fixture),
+        encoding="utf-8",
+    )
+    tested = agentflow(
+        "advance",
+        run_id,
+        "--adapter",
+        "fake",
+        "--adapter-fixture",
+        str(fixture_path),
+        "--data-dir",
+        str(data_dir),
+        cwd=temp_path,
+        environment=environment,
+    )
+    if tested.returncode != 0:
+        raise AssertionError(tested.stderr)
+    return tested
+
+
+def create_tested_run(
+    temp_path: Path,
+    environment: dict[str, str],
+) -> tuple[Path, str]:
+    data_dir, run_id = create_verified_run(temp_path, environment)
+    advance_tester(temp_path, data_dir, run_id, environment)
     return data_dir, run_id
 
 
@@ -574,7 +693,7 @@ class AdvanceCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
-            data_dir, run_id = create_verified_run(temp_path, environment)
+            data_dir, run_id = create_tested_run(temp_path, environment)
             fixture_path = temp_path / "adapter-fixture.json"
             fixture_path.write_text(
                 json.dumps(
@@ -959,7 +1078,7 @@ raise SystemExit(7)
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
-            data_dir, run_id = create_verified_run(temp_path, environment)
+            data_dir, run_id = create_tested_run(temp_path, environment)
             fixture_path = temp_path / "adapter-fixture.json"
             fixture_path.write_text(
                 json.dumps(
@@ -1019,7 +1138,7 @@ raise SystemExit(7)
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
-            data_dir, run_id = create_verified_run(temp_path, environment)
+            data_dir, run_id = create_tested_run(temp_path, environment)
             fixture_path = temp_path / "adapter-fixture.json"
             fixture_path.write_text(
                 json.dumps(
@@ -1120,6 +1239,7 @@ raise SystemExit(7)
             self.assertEqual(checks["candidate_sha"], repair_sha)
             self.assertTrue((data_dir / "runs" / run_id / "checks-1.json").is_file())
 
+            advance_tester(temp_path, data_dir, run_id, environment)
             fixture_path.write_text(
                 json.dumps({"reviewer": {"disposition": "approve", "findings": []}}),
                 encoding="utf-8",
@@ -1146,7 +1266,7 @@ raise SystemExit(7)
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
-            data_dir, run_id = create_verified_run(temp_path, environment)
+            data_dir, run_id = create_tested_run(temp_path, environment)
             fixture_path = temp_path / "adapter-fixture.json"
             fixture_path.write_text(
                 json.dumps(
@@ -1227,6 +1347,7 @@ raise SystemExit(7)
                     ).returncode,
                     0,
                 )
+                advance_tester(temp_path, data_dir, run_id, environment)
                 fixture_path.write_text(
                     json.dumps(
                         {
@@ -1332,7 +1453,7 @@ raise SystemExit(7)
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
-            data_dir, run_id = create_verified_run(temp_path, environment)
+            data_dir, run_id = create_tested_run(temp_path, environment)
             fixture_path = temp_path / "adapter-fixture.json"
             fixture_path.write_text(
                 json.dumps(
@@ -1416,6 +1537,7 @@ raise SystemExit(7)
                 ).returncode,
                 0,
             )
+            advance_tester(temp_path, data_dir, run_id, environment)
             fixture_path.write_text(
                 json.dumps({"reviewer": {"disposition": "approve", "findings": []}}),
                 encoding="utf-8",
@@ -1675,7 +1797,7 @@ raise SystemExit(7)
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
-            data_dir, run_id = create_verified_run(temp_path, environment)
+            data_dir, run_id = create_tested_run(temp_path, environment)
             first_checks = json.loads(
                 (data_dir / "runs" / run_id / "checks-1.json").read_text(
                     encoding="utf-8"
@@ -1779,6 +1901,421 @@ raise SystemExit(7)
             ),
             2,
         )
+
+    def test_tester_passing_test_commits_reruns_checks_and_reports_tested(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            data_dir, run_id = create_verified_run(
+                temp_path, environment, TEST_RUNNING_CHECK
+            )
+            run_dir = data_dir / "runs" / run_id
+            verified_sha = next(
+                event["candidate_sha"]
+                for event in reversed(_events(data_dir, run_id))
+                if event["type"] == "checks_passed"
+            )
+
+            tested = advance_tester(
+                temp_path, data_dir, run_id, environment, TESTER_PASSING_FIXTURE
+            )
+
+            response = json.loads(tested.stdout)
+            self.assertEqual(response["state"], "tested")
+            self.assertNotEqual(response["candidate_sha"], verified_sha)
+            post = json.loads(
+                (run_dir / "checks-1-post-tests.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(post["candidate_sha"], response["candidate_sha"])
+            self.assertTrue(post["workspace_clean"])
+            self.assertTrue((run_dir / "checks-1.json").is_file())
+            self.assertTrue((run_dir / "tester-report-1.json").is_file())
+            tests_ready = next(
+                event
+                for event in reversed(_events(data_dir, run_id))
+                if event["type"] == "tests_ready"
+            )
+            self.assertEqual(tests_ready["candidate_sha"], response["candidate_sha"])
+            self.assertEqual(
+                Path(tests_ready["checks_artifact"]).name, "checks-1-post-tests.json"
+            )
+            worktree = Path(
+                json.loads(
+                    agentflow(
+                        "status",
+                        run_id,
+                        "--data-dir",
+                        str(data_dir),
+                        cwd=temp_path,
+                        environment=environment,
+                    ).stdout
+                )["worktree"]
+            )
+            message = subprocess.run(
+                ["git", "log", "-1", "--format=%s"],
+                cwd=worktree,
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.strip()
+            self.assertEqual(message, f"Agentflow run {run_id} tests 1")
+            status = agentflow(
+                "status",
+                run_id,
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            replayed = json.loads(status.stdout)
+            self.assertEqual(replayed["state"], "tested")
+            self.assertEqual(replayed["candidate_sha"], response["candidate_sha"])
+
+    def test_tester_failing_test_marks_run_failed_with_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            data_dir, run_id = create_verified_run(
+                temp_path, environment, TEST_RUNNING_CHECK
+            )
+            run_dir = data_dir / "runs" / run_id
+            fixture_path = temp_path / "tester-fixture.json"
+            fixture_path.write_text(json.dumps(TESTER_FAILING_FIXTURE), encoding="utf-8")
+
+            advanced = agentflow(
+                "advance",
+                run_id,
+                "--adapter",
+                "fake",
+                "--adapter-fixture",
+                str(fixture_path),
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+
+            self.assertEqual(advanced.returncode, 0, advanced.stderr)
+            self.assertEqual(json.loads(advanced.stdout)["state"], "failed")
+            post = json.loads(
+                (run_dir / "checks-1-post-tests.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(
+                any(check["returncode"] != 0 for check in post["checks"])
+            )
+            tests_failed = next(
+                event
+                for event in reversed(_events(data_dir, run_id))
+                if event["type"] == "tests_failed"
+            )
+            self.assertEqual(tests_failed["findings"][0]["severity"], "blocker")
+            self.assertEqual(
+                Path(tests_failed["checks_artifact"]).name, "checks-1-post-tests.json"
+            )
+            status = agentflow(
+                "status",
+                run_id,
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(json.loads(status.stdout)["state"], "failed")
+
+    def test_tester_change_outside_test_paths_fails_deterministically(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            data_dir, run_id = create_verified_run(temp_path, environment)
+            fixture_path = temp_path / "tester-fixture.json"
+            fixture_path.write_text(
+                json.dumps(TESTER_OUT_OF_PATH_FIXTURE), encoding="utf-8"
+            )
+
+            advanced = agentflow(
+                "advance",
+                run_id,
+                "--adapter",
+                "fake",
+                "--adapter-fixture",
+                str(fixture_path),
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+
+            self.assertNotEqual(advanced.returncode, 0)
+            self.assertIn("outside the declared test paths", advanced.stderr)
+            self.assertIn("README.md", advanced.stderr)
+            status = agentflow(
+                "status",
+                run_id,
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(json.loads(status.stdout)["state"], "verified")
+            self.assertFalse(
+                (data_dir / "runs" / run_id / "checks-1-post-tests.json").exists()
+            )
+
+    def test_tester_no_change_references_existing_checks_without_rerun(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            data_dir, run_id = create_verified_run(temp_path, environment)
+            run_dir = data_dir / "runs" / run_id
+            verified_sha = next(
+                event["candidate_sha"]
+                for event in reversed(_events(data_dir, run_id))
+                if event["type"] == "checks_passed"
+            )
+
+            tested = advance_tester(temp_path, data_dir, run_id, environment)
+
+            response = json.loads(tested.stdout)
+            self.assertEqual(response["state"], "tested")
+            self.assertEqual(response["candidate_sha"], verified_sha)
+            self.assertFalse((run_dir / "checks-1-post-tests.json").exists())
+            tests_ready = next(
+                event
+                for event in reversed(_events(data_dir, run_id))
+                if event["type"] == "tests_ready"
+            )
+            self.assertEqual(tests_ready["candidate_sha"], verified_sha)
+            self.assertEqual(
+                Path(tests_ready["checks_artifact"]).name, "checks-1.json"
+            )
+
+    def test_tester_requires_declared_test_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            data_dir, run_id = create_verified_run(
+                temp_path, environment, test_paths=None
+            )
+            fixture_path = temp_path / "tester-fixture.json"
+            fixture_path.write_text(
+                json.dumps(TESTER_NO_CHANGE_FIXTURE), encoding="utf-8"
+            )
+
+            advanced = agentflow(
+                "advance",
+                run_id,
+                "--adapter",
+                "fake",
+                "--adapter-fixture",
+                str(fixture_path),
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+
+            self.assertNotEqual(advanced.returncode, 0)
+            self.assertIn("regenerate the profile with --test-path", advanced.stderr)
+            self.assertIn("start", advanced.stderr)
+            status = agentflow(
+                "status",
+                run_id,
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(json.loads(status.stdout)["state"], "verified")
+
+    def test_reviewer_receives_tester_findings_and_binds_to_tester_sha(self) -> None:
+        from agentflow.workflow import advance_run
+
+        class TesterThenReviewerAdapter:
+            name = "fake"
+
+            def __init__(self) -> None:
+                self.reviewer_request: dict | None = None
+
+            def invoke(self, *, role, request, workspace, transcript_path=None):
+                if role == "tester":
+                    tests_dir = workspace / "tests"
+                    tests_dir.mkdir(parents=True, exist_ok=True)
+                    (tests_dir / "test_probe.py").write_text(
+                        "print('probe ok')\n", encoding="utf-8"
+                    )
+                    return {
+                        "summary": "Probed the candidate with a new test.",
+                        "files_changed": ["tests/test_probe.py"],
+                        "findings": [
+                            {
+                                "file": None,
+                                "message": "Consider covering the error path too",
+                                "severity": "minor",
+                            }
+                        ],
+                    }
+                if role == "reviewer":
+                    self.reviewer_request = request
+                    return {"disposition": "approve", "findings": []}
+                raise AssertionError(f"unexpected role {role}")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            data_dir, run_id = create_verified_run(
+                temp_path, environment, TEST_RUNNING_CHECK
+            )
+            verified_sha = next(
+                event["candidate_sha"]
+                for event in reversed(_events(data_dir, run_id))
+                if event["type"] == "checks_passed"
+            )
+            adapter = TesterThenReviewerAdapter()
+
+            tested = advance_run(run_id=run_id, data_dir=data_dir, adapter=adapter)
+            self.assertEqual(tested.state, "tested")
+            tester_sha = tested.candidate_sha
+            self.assertNotEqual(tester_sha, verified_sha)
+
+            reviewed = advance_run(run_id=run_id, data_dir=data_dir, adapter=adapter)
+            self.assertEqual(reviewed.state, "awaiting_human")
+            self.assertEqual(reviewed.candidate_sha, tester_sha)
+            self.assertEqual(
+                adapter.reviewer_request["tester_findings"],
+                [
+                    {
+                        "file": None,
+                        "message": "Consider covering the error path too",
+                        "severity": "minor",
+                    }
+                ],
+            )
+            self.assertEqual(adapter.reviewer_request["candidate_sha"], tester_sha)
+
+            approved = agentflow(
+                "approve",
+                run_id,
+                "--approved-by",
+                "integration-test-human",
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(approved.returncode, 0, approved.stderr)
+            self.assertEqual(json.loads(approved.stdout)["approved_sha"], tester_sha)
+
+    def test_repair_after_block_reruns_tester_with_new_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            data_dir, run_id = create_tested_run(temp_path, environment)
+            run_dir = data_dir / "runs" / run_id
+            fixture_path = temp_path / "adapter-fixture.json"
+            fixture_path.write_text(
+                json.dumps(
+                    {
+                        "reviewer": {
+                            "disposition": "changes_requested",
+                            "findings": [
+                                {
+                                    "file": "README.md",
+                                    "message": "Needs clearer docs",
+                                    "severity": "major",
+                                }
+                            ],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            blocked = agentflow(
+                "advance",
+                run_id,
+                "--adapter",
+                "fake",
+                "--adapter-fixture",
+                str(fixture_path),
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(blocked.returncode, 0, blocked.stderr)
+            self.assertEqual(json.loads(blocked.stdout)["state"], "changes_requested")
+
+            fixture_path.write_text(
+                json.dumps(
+                    {
+                        "builder": {
+                            "output": {
+                                "commands_run": [],
+                                "files_changed": ["README.md"],
+                                "steps_completed": ["P1"],
+                                "unresolved_issues": [],
+                            },
+                            "writes": {
+                                "README.md": "# Target\n\nHealth endpoint documented well.\n"
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            repaired = agentflow(
+                "advance",
+                run_id,
+                "--adapter",
+                "fake",
+                "--adapter-fixture",
+                str(fixture_path),
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(repaired.returncode, 0, repaired.stderr)
+            self.assertEqual(json.loads(repaired.stdout)["state"], "built")
+
+            rechecked = agentflow(
+                "advance",
+                run_id,
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(rechecked.returncode, 0, rechecked.stderr)
+            self.assertEqual(json.loads(rechecked.stdout)["state"], "verified")
+
+            tested = advance_tester(temp_path, data_dir, run_id, environment)
+            self.assertEqual(json.loads(tested.stdout)["state"], "tested")
+            # The chain re-ran at a new generation, preserving prior evidence.
+            self.assertTrue((run_dir / "tester-report-1.json").is_file())
+            self.assertTrue((run_dir / "tester-report-2.json").is_file())
+            self.assertTrue((run_dir / "checks-2.json").is_file())
+
+            fixture_path.write_text(
+                json.dumps({"reviewer": {"disposition": "approve", "findings": []}}),
+                encoding="utf-8",
+            )
+            rereviewed = agentflow(
+                "advance",
+                run_id,
+                "--adapter",
+                "fake",
+                "--adapter-fixture",
+                str(fixture_path),
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(rereviewed.returncode, 0, rereviewed.stderr)
+            self.assertEqual(json.loads(rereviewed.stdout)["state"], "awaiting_human")
+            self.assertTrue((run_dir / "review-2.json").is_file())
 
 
 if __name__ == "__main__":

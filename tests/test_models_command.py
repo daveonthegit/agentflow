@@ -10,15 +10,21 @@ from test_advance_command import (
     PROJECT_ROOT,
     agentflow,
     create_profiled_run,
-    create_verified_run,
+    create_tested_run,
 )
 
 
-SUGGESTED = {"builder": "opus", "planner": "opus", "reviewer": "opus"}
+SUGGESTED = {
+    "builder": "opus",
+    "planner": "opus",
+    "reviewer": "opus",
+    "tester": "opus",
+}
 CURSOR_SUGGESTED = {
     "builder": "claude-opus-4-8-thinking-high",
     "planner": "claude-opus-4-8-thinking-high",
     "reviewer": "claude-opus-4-8-thinking-high",
+    "tester": "claude-opus-4-8-thinking-high",
 }
 
 PLANNER_STUB_TEMPLATE = """#!/usr/bin/env python3
@@ -364,7 +370,7 @@ class ModelsCommandTests(unittest.TestCase):
                 "--adapter",
                 "claude",
                 "--set",
-                "tester=opus",
+                "merger=opus",
                 "--data-dir",
                 str(data_dir),
                 cwd=temp_path,
@@ -372,8 +378,32 @@ class ModelsCommandTests(unittest.TestCase):
             )
 
             self.assertNotEqual(rejected.returncode, 0)
-            self.assertIn("tester", rejected.stderr)
+            self.assertIn("merger", rejected.stderr)
             self.assertFalse((data_dir / "models.json").exists())
+
+    def test_models_set_accepts_the_tester_role(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = base_environment()
+            data_dir = temp_path / "agentflow-home"
+
+            recorded = agentflow(
+                "models",
+                "--adapter",
+                "cursor",
+                "--set",
+                "tester=custom-tester-model",
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            self.assertEqual(
+                json.loads(recorded.stdout)["cursor"]["recorded"],
+                {"tester": "custom-tester-model"},
+            )
 
     def test_stage_events_record_the_resolved_model_for_claude(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -458,7 +488,7 @@ class ModelsCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             environment = base_environment()
-            data_dir, run_id = create_verified_run(temp_path, environment)
+            data_dir, run_id = create_tested_run(temp_path, environment)
             fixture_path = temp_path / "adapter-fixture.json"
             fixture_path.write_text(
                 json.dumps({"reviewer": {"disposition": "approve", "findings": []}}),
@@ -482,7 +512,13 @@ class ModelsCommandTests(unittest.TestCase):
 
             stage_events = {event["type"] for event in events}
             self.assertLessEqual(
-                {"plan_ready", "build_ready", "checks_passed", "review_ready"},
+                {
+                    "plan_ready",
+                    "build_ready",
+                    "checks_passed",
+                    "tests_ready",
+                    "review_ready",
+                },
                 stage_events,
             )
             for event in events:

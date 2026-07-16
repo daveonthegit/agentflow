@@ -14,6 +14,7 @@ from .contracts import (
     validate_builder_report,
     validate_plan,
     validate_review,
+    validate_tester_report,
 )
 
 
@@ -30,16 +31,30 @@ ROLE_INSTRUCTIONS = {
         "Review the candidate against the task, plan, and checks. Do not "
         "edit files. Return only structured findings and disposition."
     ),
+    "tester": (
+        "Adversarially probe the candidate against the Task Spec and "
+        "acceptance criteria by strengthening tests only. Modify only files "
+        "under the declared test paths; never touch production code. Express "
+        "any suspected defect as a failing test under those test paths. Prose "
+        "findings alone do not block the workflow — only tests the "
+        "authoritative checks run can. Return only the required report."
+    ),
 }
 
-ROLES = ("planner", "builder", "reviewer")
+ROLES = ("planner", "builder", "reviewer", "tester")
 
 SUGGESTED_MODELS = {
-    "claude": {"builder": "opus", "planner": "opus", "reviewer": "opus"},
+    "claude": {
+        "builder": "opus",
+        "planner": "opus",
+        "reviewer": "opus",
+        "tester": "opus",
+    },
     "cursor": {
         "builder": "claude-opus-4-8-thinking-high",
         "planner": "claude-opus-4-8-thinking-high",
         "reviewer": "claude-opus-4-8-thinking-high",
+        "tester": "claude-opus-4-8-thinking-high",
     },
 }
 
@@ -91,6 +106,7 @@ def _validate_role_output(role: str, value: Any) -> dict[str, Any]:
         "planner": validate_plan,
         "builder": validate_builder_report,
         "reviewer": validate_review,
+        "tester": validate_tester_report,
     }
     return validators[role](value)
 
@@ -203,7 +219,7 @@ class CodexAdapter:
         transcript_path: Path | None = None,
     ) -> dict[str, Any]:
         del transcript_path
-        sandbox = "workspace-write" if role == "builder" else "read-only"
+        sandbox = "workspace-write" if role in {"builder", "tester"} else "read-only"
         prompt = role_prompt(role, request)
         with tempfile.TemporaryDirectory(prefix="agentflow-codex-") as temp_dir:
             temp_path = Path(temp_dir)
@@ -436,15 +452,17 @@ class ClaudeAdapter:
         "--permission-mode",
         "dontAsk",
     ]
+    _WRITE_ARGUMENTS = [
+        "--permission-mode",
+        "acceptEdits",
+        "--allowedTools",
+        "Bash",
+    ]
     _ROLE_ARGUMENTS = {
         "planner": _READ_ONLY_ARGUMENTS,
-        "builder": [
-            "--permission-mode",
-            "acceptEdits",
-            "--allowedTools",
-            "Bash",
-        ],
+        "builder": _WRITE_ARGUMENTS,
         "reviewer": _READ_ONLY_ARGUMENTS,
+        "tester": _WRITE_ARGUMENTS,
     }
 
     def __init__(

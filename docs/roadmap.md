@@ -62,11 +62,20 @@ record and verify their outputs.
 - Check records enriched with `started_at`, `duration_ms`, shared per-stage
   `attempt`, and an allowlisted environment fingerprint only.
 
-## Later: adversarial verification
+## Completed: adversarial verification gate
 
-- Tester Agent Role that may modify tests but not production code.
+- Tester Agent Role that runs after authoritative checks pass and before review,
+  modifying only files under the profile's declared `test_paths` and never
+  production code, enforced by the kernel against the authoritative Git diff.
+- Repository Profile `--test-path` declaration; new `tests_ready`/`tests_failed`
+  events and `tested` state; the tester commit re-runs the authoritative checks
+  into `checks-<G>-post-tests.json`, and its prose findings are evidence surfaced
+  to the reviewer that never gate the workflow alone.
+
+## Later: adversarial verification hardening
+
 - Harden the existing read-only reviewer with evaluation fixtures.
-- Bounded builder-fix retry loops.
+- Bounded builder-fix retry loop from `tests_failed`.
 - Evaluation fixtures and regression evidence for role and prompt changes.
 
 ## Later: target-repository work graph and reconciliation
