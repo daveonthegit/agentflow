@@ -9,6 +9,7 @@ path for operators and later read-only surfaces. It never writes.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,80 @@ _STATE_BY_EVENT = {
 }
 
 
+def _real_path(path: Path) -> Path | None:
+    """Fully-resolved real path of ``path``, or None when resolution fails.
+
+    ``os.path.realpath`` does not raise on a symlink loop — it returns the loop
+    path left in place, which still resolves within its own directory — so a
+    circular/self-referential symlink survives this check and is caught only
+    when the path is opened. Every read here catches ``OSError`` so that loop is
+    skipped rather than raised. Any other resolution error yields None.
+    """
+    try:
+        return Path(os.path.realpath(path))
+    except OSError:
+        return None
+
+
+def _within(base_real: Path, real: Path) -> bool:
+    """True when ``real`` is ``base_real`` itself or nested beneath it."""
+    return real == base_real or base_real in real.parents
+
+
+def _is_confined_component(name: str) -> bool:
+    """True when ``name`` is a single, non-traversing path component.
+
+    Rejects ``.``/``..`` and anything containing a path separator or NUL, so a
+    run id can only ever name a direct child of the runs directory.
+    """
+    if name in ("", ".", ".."):
+        return False
+    if "\x00" in name:
+        return False
+    return name == Path(name).name
+
+
+def confined_run_dir(runs_dir: Path, run_id: str) -> Path | None:
+    """Run directory for ``run_id`` if it is confined to ``runs_dir``.
+
+    Rejects run ids that are not a single path component (``.``, ``..``, or any
+    id with a path separator), and omits a symlinked run directory whose real
+    path escapes ``runs_dir``. Returns None on any confinement failure; never
+    raises.
+    """
+    if not _is_confined_component(run_id):
+        return None
+    runs_real = _real_path(runs_dir)
+    if runs_real is None:
+        return None
+    run_dir = runs_dir / run_id
+    if not run_dir.is_dir():
+        return None
+    real = _real_path(run_dir)
+    if real is None or not _within(runs_real, real):
+        return None
+    return run_dir
+
+
+def confined_file(run_dir: Path, filename: str) -> Path | None:
+    """Path to ``filename`` inside ``run_dir`` if confined there, else None.
+
+    Refuses an evidence or transcript symlink whose real path escapes
+    ``run_dir``. A circular symlink passes this containment check — its loop
+    resolves within the directory — but fails when opened; callers read through
+    helpers that treat that ``OSError`` as a skip, so a hostile file never
+    aborts reads of its siblings. Never raises.
+    """
+    run_real = _real_path(run_dir)
+    if run_real is None:
+        return None
+    path = run_dir / filename
+    real = _real_path(path)
+    if real is None or not _within(run_real, real):
+        return None
+    return path
+
+
 def read_events_tolerant(events_path: Path) -> tuple[list[dict[str, Any]], bool]:
     """Load event dicts from ``events.jsonl``, isolating corruption.
 
@@ -49,7 +124,13 @@ def read_events_tolerant(events_path: Path) -> tuple[list[dict[str, Any]], bool]
     """
     if not events_path.is_file():
         return [], False
-    raw = events_path.read_bytes()
+    try:
+        raw = events_path.read_bytes()
+    except OSError:
+        # An unreadable evidence file (for example a circular symlink that
+        # slipped past is_file) is a confinement/damage signal, not a crash:
+        # report it as truncated with no recovered events.
+        return [], True
     events: list[dict[str, Any]] = []
     # Split on newlines in bytes so a bad UTF-8 segment cannot poison earlier
     # lines. A trailing incomplete line without a newline is ignored, matching
@@ -113,12 +194,12 @@ def _project_fields_from_events(
     }
 
 
-def _read_json_object(path: Path) -> dict[str, Any]:
-    if not path.is_file():
+def _read_json_object(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.is_file():
         return {}
     try:
         raw = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+    except (OSError, UnicodeDecodeError):
         return {}
     try:
         value = json.loads(raw)
@@ -129,11 +210,18 @@ def _read_json_object(path: Path) -> dict[str, Any]:
 
 def _project_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     run_id = run_dir.name
-    events_path = run_dir / "events.jsonl"
-    events, truncated = read_events_tolerant(events_path)
+    # Every evidence file is confined to the run directory: an escaping symlink
+    # is refused (read as absent) and a circular symlink is skipped when opened,
+    # so a hostile file never aborts this Run or its siblings.
+    events_path = confined_file(run_dir, "events.jsonl")
+    events, truncated = (
+        read_events_tolerant(events_path)
+        if events_path is not None
+        else ([], False)
+    )
     fields = _project_fields_from_events(events)
-    task = _read_json_object(run_dir / "task.json")
-    repository = _read_json_object(run_dir / "repository.json")
+    task = _read_json_object(confined_file(run_dir, "task.json"))
+    repository = _read_json_object(confined_file(run_dir, "repository.json"))
     source = task.get("source")
     run_entry: dict[str, Any] = {
         "run_id": run_id,
@@ -177,18 +265,23 @@ def build_projection(
     evidence_entries: list[dict[str, Any]] = []
     keyed: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     if runs_dir.is_dir():
-        for run_dir in sorted(runs_dir.iterdir(), key=lambda path: path.name):
-            if not run_dir.is_dir():
+        for entry in sorted(runs_dir.iterdir(), key=lambda path: path.name):
+            # Confine the run directory: reject traversing names and omit a
+            # symlinked run dir whose real path escapes runs/.
+            run_dir = confined_run_dir(runs_dir, entry.name)
+            if run_dir is None:
                 continue
-            events_path = run_dir / "events.jsonl"
-            if not events_path.is_file():
+            # Confine the evidence file to the run dir; an escaping or circular
+            # events symlink is refused so the Run is skipped, never raised.
+            events_path = confined_file(run_dir, "events.jsonl")
+            if events_path is None or not events_path.is_file():
                 continue
             # Sort key: first UTF-8-decodable line when present, else run id.
             sort_key = run_dir.name
             try:
                 first_line = events_path.read_bytes().split(b"\n", 1)[0]
                 sort_key = first_line.decode("utf-8")
-            except UnicodeDecodeError:
+            except (OSError, UnicodeDecodeError):
                 pass
             run_entry, evidence_entry = _project_run(run_dir)
             keyed.append((sort_key, run_entry, evidence_entry))

@@ -308,8 +308,19 @@ Every behavior statement carries one of three classifications:
   event lines before damage are preserved.
 - **Target.** Capability-based model routing across providers, beyond the
   Claude adapter's recorded per-role routing.
-- **Target.** A local read-only web UI over the observability projection for
-  runs, evidence, and live role transcripts.
+- **Implemented.** A local read-only web UI over the observability projection
+  for runs, work, evidence, and live role transcripts (`agentflow serve`). It
+  renders the projection at `/api/projection` and streams each Run's events and
+  growing `*-transcript.jsonl` files over Server-Sent Events, tailing the same
+  evidence files the `watch` command follows. It never writes workflow state, is
+  never consulted as workflow authority, and exposes no approve/start/mutate
+  route — every non-GET method is refused. Run ids and filesystem paths are
+  confined: `.`/`..` and separator-bearing run ids are rejected, a symlinked run
+  directory whose real path escapes Agentflow Home `runs/` is omitted, and an
+  evidence or transcript symlink that escapes its run directory is refused. A
+  circular/self-referential evidence or transcript symlink is a confinement
+  failure that skips that path without raising, so `/api/projection` and the SSE
+  stream keep serving every sibling in-bounds Run.
 - **Target.** Automatic adapter self-provisioning: Agentflow detecting a
   missing adapter and building, testing, and landing one through its own
   workflow before use. Until this exists, adapters are built through

@@ -41,6 +41,7 @@ from .run_kernel import (
 )
 from .projection import build_projection
 from .reconcile import reconcile
+from .web_ui import create_web_server
 from .workflow import advance_run
 
 
@@ -169,6 +170,17 @@ def main() -> int:
     )
     project_parser.add_argument("--repository", type=Path, default=Path("."))
     project_parser.add_argument("--data-dir", type=Path)
+    serve_parser = subcommands.add_parser(
+        "serve",
+        help=(
+            "serve a local read-only web UI over the observability projection "
+            "(runs, work, evidence, and live role transcripts)"
+        ),
+    )
+    serve_parser.add_argument("--repository", type=Path, default=Path("."))
+    serve_parser.add_argument("--data-dir", type=Path)
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
 
     if args.command == "init":
@@ -458,6 +470,30 @@ def main() -> int:
             repository=args.repository,
         )
         print(json.dumps(projection, sort_keys=True))
+        return 0
+
+    if args.command == "serve":
+        server = create_web_server(
+            data_dir=agentflow_home(args.data_dir),
+            repository=args.repository,
+            host=args.host,
+            port=args.port,
+        )
+        host, port = server.server_address[0], server.server_address[1]
+        print(
+            json.dumps(
+                {"url": f"http://{host}:{port}", "state": "serving"},
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.shutdown()
+            server.server_close()
         return 0
 
     if args.command == "reconcile":

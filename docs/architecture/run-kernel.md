@@ -119,6 +119,20 @@ agentflow reconcile [--adapter claude|cursor|codex|fake] [--repository <path>]
   is isolated: invalid JSON lines and undecodable bytes stop reading that Run's
   further events but do not abort the projection, and valid lines before the
   damage are preserved.
+- `serve` runs a local read-only web UI over that same projection
+  (`--repository` defaulting to the current directory; `--host`/`--port`
+  defaulting to `127.0.0.1:8787`, port `0` selecting a free port). It prints the
+  bound URL as JSON, serves the projection at `/api/projection`, and streams
+  each Run's events and growing `*-transcript.jsonl` files over Server-Sent
+  Events at `/api/runs/<run_id>/stream`, tailing the same evidence files as
+  `watch`. It writes no state, is never consulted by `advance`/`approve`/`start`,
+  and refuses every non-GET method — there is no approve/start/mutate route. Run
+  ids and paths are confined: `.`/`..` and separator-bearing run ids are
+  rejected, a symlinked run directory whose real path escapes Agentflow Home
+  `runs/` is omitted, and an evidence or transcript symlink escaping its run
+  directory is refused. A circular/self-referential evidence or transcript
+  symlink is skipped without raising so the projection and stream keep serving
+  every sibling in-bounds Run.
 - `advance --model` pins the model for the single stage that invocation
   performs and is accepted with `--adapter claude` or `--adapter cursor`.
   Each routing adapter resolves a role's model in precedence order — explicit
