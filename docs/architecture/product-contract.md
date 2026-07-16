@@ -294,10 +294,11 @@ Every behavior statement carries one of three classifications:
   (`stream-json`) to a tailable `runs/<run-id>/<role>-transcript.jsonl`
   evidence file referenced from the stage event, and the read-only `watch`
   command follows a Run's events and growing transcript until it reaches a
-  state requiring external action. Cursor transcripts include a local attempt
-  marker before each bounded output attempt. The fake and Codex adapters
-  produce no transcript. Streaming does not change workflow state,
-  verification rules, or approval authority.
+  state requiring external action, rendering human-readable event and
+  assistant/tool lines rather than raw stream-json (evidence on disk stays
+  raw). Cursor transcripts include a local attempt marker before each bounded
+  output attempt. The fake and Codex adapters produce no transcript. Streaming
+  does not change workflow state, verification rules, or approval authority.
 - **Implemented.** A read-only observability projection over Run Evidence and
   the Work Graph (`agentflow project`): it renders runs, work, and evidence,
   is rebuildable from events at any time, never writes, and is never consulted

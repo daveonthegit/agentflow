@@ -346,26 +346,200 @@ def read_run_status(*, run_id: str, data_dir: Path) -> RunStatus:
     )
 
 
-def _emit_new_lines(path: Path, offset: int, out: TextIO) -> int:
-    """Print any complete lines appended to ``path`` past ``offset``.
+def _read_appended_lines(path: Path, offset: int) -> tuple[list[str], int]:
+    """Return complete lines appended to ``path`` past ``offset``.
 
-    Tracks a byte offset and only emits up to the final newline so a
-    concurrently-growing file never yields a partial line. Read-only.
+    Tracks a byte offset and only yields up to the final newline so a
+    concurrently-growing file never returns a partial line. Read-only.
     """
     if not path.exists():
-        return offset
+        return [], offset
     with path.open("rb") as handle:
         handle.seek(offset)
         data = handle.read()
     if not data:
-        return offset
+        return [], offset
     last_newline = data.rfind(b"\n")
     if last_newline == -1:
-        return offset
+        return [], offset
     complete = data[: last_newline + 1]
-    out.write(complete.decode("utf-8"))
-    out.flush()
-    return offset + len(complete)
+    text = complete.decode("utf-8")
+    lines = text.splitlines()
+    return lines, offset + len(complete)
+
+
+def _short_sha(value: object) -> str:
+    if isinstance(value, str) and len(value) >= 12:
+        return value[:12]
+    return str(value)
+
+
+def _truncate(text: str, limit: int = 100) -> str:
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def format_watch_event(event: dict[str, Any]) -> str | None:
+    """Render one Run event as a single human-readable watch line."""
+    event_type = event.get("type")
+    if not isinstance(event_type, str) or not event_type:
+        return None
+    # Claim bookkeeping is high-volume noise while stages run.
+    if event_type in {"claim_acquired", "claim_released", "claim_expired"}:
+        return None
+    parts = [f"event  {event_type}"]
+    for key in (
+        "candidate_sha",
+        "approved_sha",
+        "rejected_sha",
+        "new_candidate_sha",
+        "model",
+        "approved_by",
+        "abandoned_by",
+        "rejected_by",
+        "reason",
+    ):
+        value = event.get(key)
+        if value is None or value == "":
+            continue
+        if key.endswith("_sha"):
+            parts.append(f"{key}={_short_sha(value)}")
+        else:
+            parts.append(f"{key}={_truncate(str(value), 60)}")
+    return "  ".join(parts)
+
+
+def _display_shell_command(command: str) -> str:
+    """Prefer the meaningful part of a shell command for watch output."""
+    text = command.strip()
+    # Builders often wrap work as: cd "<worktree>" && <real command>
+    for separator in (" && ", "\n"):
+        if separator in text:
+            head, _, tail = text.partition(separator)
+            if head.lstrip().startswith("cd ") and tail.strip():
+                text = tail.strip()
+                break
+    return _truncate(text, 90)
+
+
+def _tool_summary(name: str, tool_input: object) -> str:
+    if not isinstance(tool_input, dict):
+        return name
+    if name in {"Bash", "Shell", "shell"}:
+        command = tool_input.get("command")
+        if isinstance(command, str) and command.strip():
+            return f"{name}  {_display_shell_command(command)}"
+    for key in ("file_path", "path", "target_notebook", "uri"):
+        path = tool_input.get(key)
+        if isinstance(path, str) and path:
+            return f"{name}  {Path(path).name}"
+    return name
+
+
+def _assistant_text_blocks(content: object) -> list[str]:
+    if isinstance(content, str):
+        text = content.strip()
+        return [text] if text else []
+    if not isinstance(content, list):
+        return []
+    lines: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            text = block.get("text")
+            if isinstance(text, str) and text.strip():
+                lines.append(text.strip())
+        elif block_type == "tool_use":
+            name = block.get("name")
+            if isinstance(name, str) and name:
+                lines.append(f"→ {_tool_summary(name, block.get('input'))}")
+    return lines
+
+
+def format_watch_transcript_line(line: str, *, label: str) -> list[str]:
+    """Render one transcript JSONL line as zero or more human watch lines."""
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        text = line.strip()
+        return [f"{label}  {text}"] if text else []
+    if not isinstance(payload, dict):
+        return []
+    # Cursor attempt markers are adapter bookkeeping.
+    if payload.get("type") == "agentflow_adapter_attempt":
+        attempt = payload.get("attempt")
+        return [f"{label}  attempt {attempt}"] if attempt is not None else []
+
+    event_type = payload.get("type")
+    subtype = payload.get("subtype")
+
+    # Skip stream noise: system init, rate limits, thinking tokens/deltas.
+    if event_type in {"system", "rate_limit_event", "thinking"}:
+        return []
+    if event_type == "content_block_delta":
+        return []
+    if subtype in {"delta", "thinking_tokens", "init"}:
+        return []
+
+    if event_type == "assistant":
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return [f"{label}  {message.strip()}"]
+        if isinstance(message, dict):
+            return [
+                f"{label}  {text}" for text in _assistant_text_blocks(message.get("content"))
+            ]
+        # Some stubs put content at the top level.
+        return [f"{label}  {text}" for text in _assistant_text_blocks(payload.get("content"))]
+
+    if event_type == "tool_call" and subtype == "started":
+        tool = payload.get("tool_call") or payload.get("tool") or {}
+        if isinstance(tool, dict):
+            name = tool.get("name") or tool.get("toolName")
+            if isinstance(name, str) and name:
+                return [f"{label}  → {name}"]
+        name = payload.get("name")
+        if isinstance(name, str) and name:
+            return [f"{label}  → {name}"]
+        return []
+
+    if event_type in {"tool_call", "user"}:
+        # Tool results and user echoes are usually huge and not useful live.
+        return []
+
+    if event_type == "result":
+        status = subtype if isinstance(subtype, str) else "done"
+        return [f"{label}  finished ({status})"]
+
+    return []
+
+
+def _transcript_label(path: Path) -> str:
+    name = path.name
+    suffix = "-transcript.jsonl"
+    if name.endswith(suffix):
+        return name[: -len(suffix)]
+    return name
+
+
+def _emit_formatted_lines(
+    path: Path,
+    offset: int,
+    out: TextIO,
+    *,
+    formatter: Callable[[str], list[str]],
+) -> int:
+    lines, new_offset = _read_appended_lines(path, offset)
+    for line in lines:
+        for rendered in formatter(line):
+            out.write(rendered + "\n")
+    if lines:
+        out.flush()
+    return new_offset
 
 
 def select_live_run(
@@ -419,6 +593,18 @@ def select_live_run(
     raise RuntimeError(f"ambiguous selection {token!r}; use the list index")
 
 
+def _format_event_line(line: str) -> list[str]:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        text = line.strip()
+        return [text] if text else []
+    if not isinstance(event, dict):
+        return []
+    rendered = format_watch_event(event)
+    return [rendered] if rendered is not None else []
+
+
 def follow_run(
     *,
     run_id: str,
@@ -429,11 +615,12 @@ def follow_run(
 ) -> str:
     """Tail a Run's events and live role transcript until it needs a human.
 
-    Prints each new line appended to ``events.jsonl`` and to whichever
-    ``<role>-transcript.jsonl`` is growing, projecting Run State each poll, and
-    returns after printing a final status line once the Run reaches a state
-    requiring external action. Exits immediately when that is already true.
-    This function is strictly read-only: it never creates or modifies evidence.
+    Prints human-readable lines for new Run events and role transcript activity
+    (assistant text and tool calls; not raw stream-json), projecting Run State
+    each poll, and returns after printing a final status line once the Run
+    reaches a state requiring external action. Exits immediately when that is
+    already true. This function is strictly read-only: it never creates or
+    modifies evidence. Evidence files on disk remain raw JSONL.
     """
     if out is None:
         out = sys.stdout
@@ -441,13 +628,29 @@ def follow_run(
     events_path = run_dir / "events.jsonl"
     events_offset = 0
     transcript_offsets: dict[Path, int] = {}
+    seen_transcripts: set[Path] = set()
     while True:
-        events_offset = _emit_new_lines(events_path, events_offset, out)
+        events_offset = _emit_formatted_lines(
+            events_path,
+            events_offset,
+            out,
+            formatter=_format_event_line,
+        )
         for transcript_path in sorted(run_dir.glob("*-transcript.jsonl")):
-            transcript_offsets[transcript_path] = _emit_new_lines(
+            label = _transcript_label(transcript_path)
+            if transcript_path not in seen_transcripts:
+                seen_transcripts.add(transcript_path)
+                out.write(f"--- {label} ---\n")
+                out.flush()
+
+            def _format(line: str, *, _label: str = label) -> list[str]:
+                return format_watch_transcript_line(line, label=_label)
+
+            transcript_offsets[transcript_path] = _emit_formatted_lines(
                 transcript_path,
                 transcript_offsets.get(transcript_path, 0),
                 out,
+                formatter=_format,
             )
         state = read_run_status(run_id=run_id, data_dir=data_dir).state
         if state in FOLLOW_TERMINAL_STATES:

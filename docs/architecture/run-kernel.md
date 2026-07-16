@@ -99,18 +99,18 @@ agentflow reconcile [--adapter claude|cursor|codex|fake] [--repository <path>]
   preceded by an `agentflow_adapter_attempt` marker for each attempt. Nonzero
   exits, missing result events, and non-success result subtypes fail
   immediately with available diagnostics.
-- `watch` follows a Run live and read-only: it prints each new line appended to
-  the Run's `events.jsonl` and to whichever `<role>-transcript.jsonl` is
-  growing, projecting Run State each poll, and prints a final status line and
-  exits once the Run reaches a state requiring external action
+- `watch` follows a Run live and read-only: it prints human-readable lines for
+  new Run events and role transcript activity (assistant text and tool calls;
+  not raw stream-json), projecting Run State each poll, and prints a final
+  status line and exits once the Run reaches a state requiring external action
   (`awaiting_human`, `changes_requested`, `tests_failed`, `failed`, `abandoned`,
-  `human_approved`, `plan_rejected`, or `human_rejected`). It exits promptly
-  when that condition is already true and never creates or modifies any
-  evidence file. With no `run_id`, it lists live Runs on stderr as `state`,
-  truncated summary, and `short_id`, accepts an interactive selection by
-  1-based index or unambiguous short-id prefix on stdin, then follows the
-  chosen Run. A single live Run is selected automatically. Display labels are
-  never workflow authority.
+  `human_approved`, `plan_rejected`, or `human_rejected`). Evidence files on
+  disk remain raw JSONL. It exits promptly when that condition is already true
+  and never creates or modifies any evidence file. With no `run_id`, it lists
+  live Runs on stderr as `state`, truncated summary, and `short_id`, accepts an
+  interactive selection by 1-based index or unambiguous short-id prefix on
+  stdin, then follows the chosen Run. A single live Run is selected
+  automatically. Display labels are never workflow authority.
 - `project` rebuilds a read-only observability projection over Run Evidence and
   the Target Repository's Work Graph (`--repository` defaulting to the current
   directory). It prints JSON with `runs`, `work` (items, ready, completed_ids),

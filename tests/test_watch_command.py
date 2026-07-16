@@ -203,11 +203,13 @@ class WatchCommandTests(unittest.TestCase):
             )
 
             self.assertEqual(watched.returncode, 0, watched.stderr)
-            # Prints new event lines from the Run's event log.
-            self.assertIn('"type": "awaiting_human"', watched.stdout)
-            self.assertIn('"type": "review_ready"', watched.stdout)
-            # Prints lines from the growing role transcript.
+            # Human-readable event lines (not raw JSONL).
+            self.assertIn("event  awaiting_human", watched.stdout)
+            self.assertIn("event  review_ready", watched.stdout)
+            self.assertNotIn('"type": "awaiting_human"', watched.stdout)
+            # Human-readable transcript lines from the growing role transcript.
             self.assertIn("reviewing the candidate", watched.stdout)
+            self.assertIn("--- reviewer-1 ---", watched.stdout)
             # Ends with a final status line at the blocking state.
             self.assertIn(f"run {run_id} awaiting_human", watched.stdout)
 
@@ -449,6 +451,82 @@ class WatchCommandTests(unittest.TestCase):
             events_after = (run_dir / "events.jsonl").read_text(encoding="utf-8")
             self.assertEqual(before, after)
             self.assertEqual(events_before, events_after)
+
+
+class WatchDisplayTests(unittest.TestCase):
+    def test_format_watch_event_is_human_readable(self) -> None:
+        from agentflow.run_kernel import format_watch_event
+
+        self.assertEqual(
+            format_watch_event(
+                {
+                    "type": "build_ready",
+                    "candidate_sha": "abcdef0123456789",
+                    "model": "opus",
+                }
+            ),
+            "event  build_ready  candidate_sha=abcdef012345  model=opus",
+        )
+        self.assertIsNone(
+            format_watch_event({"type": "claim_acquired", "holder": "x"})
+        )
+
+    def test_format_watch_transcript_keeps_text_and_tools_drops_noise(self) -> None:
+        from agentflow.run_kernel import format_watch_transcript_line
+
+        self.assertEqual(
+            format_watch_transcript_line(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {"content": "editing the README"},
+                    }
+                ),
+                label="builder-1",
+            ),
+            ["builder-1  editing the README"],
+        )
+        self.assertEqual(
+            format_watch_transcript_line(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {"type": "thinking", "thinking": "secret"},
+                                {
+                                    "type": "tool_use",
+                                    "name": "Bash",
+                                    "input": {"command": "ls -la src"},
+                                },
+                            ]
+                        },
+                    }
+                ),
+                label="builder-1",
+            ),
+            ["builder-1  → Bash  ls -la src"],
+        )
+        self.assertEqual(
+            format_watch_transcript_line(
+                json.dumps({"type": "system", "subtype": "init"}),
+                label="builder-1",
+            ),
+            [],
+        )
+        self.assertEqual(
+            format_watch_transcript_line(
+                json.dumps(
+                    {
+                        "type": "thinking",
+                        "subtype": "delta",
+                        "text": "noise",
+                    }
+                ),
+                label="builder-1",
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":
