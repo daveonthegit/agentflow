@@ -104,6 +104,21 @@ class ReconcileCommandTests(unittest.TestCase):
             fixture = temp_path / "fixture.json"
             fixture.write_text(json.dumps(RECONCILE_FIXTURE), encoding="utf-8")
 
+            # Reconcile may only capture Work Items from an approved Work Graph.
+            approved_graph = agentflow(
+                "work",
+                "approve",
+                "--approved-by",
+                "tester",
+                "--repository",
+                str(repository),
+                "--data-dir",
+                str(data_dir),
+                cwd=repository,
+                environment=environment,
+            )
+            self.assertEqual(approved_graph.returncode, 0, approved_graph.stderr)
+
             first = agentflow(
                 "reconcile",
                 "--repository",

@@ -19,6 +19,7 @@ from .work_graph import (
     compute_ready_work,
     completed_work_item_ids,
     load_work_graph,
+    require_approved_work_graph,
     work_item_content_hash,
 )
 from .workflow import advance_run
@@ -92,6 +93,18 @@ def reconcile(
     blocked_ids = sorted(
         item["id"] for item in graph if item not in ready and item["id"] not in completed
     )
+
+    # Capture gate, checked once up front so an unapproved or since-edited
+    # Work Graph refuses the whole pass before any Run is dispatched, rather
+    # than failing partway through. `start_run` re-enforces the same gate.
+    if any(
+        not any(
+            run.state in LIVE_RUN_STATES
+            for run in runs_by_item.get(item["id"], [])
+        )
+        for item in ready
+    ):
+        require_approved_work_graph(repository=repository, data_dir=data_dir)
 
     for item in ready:
         live = [

@@ -17,7 +17,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
 from agentflow.projection import build_projection, read_events_tolerant  # noqa: E402
-from agentflow.work_graph import save_work_graph  # noqa: E402
+from agentflow.work_graph import approve_work_graph, save_work_graph  # noqa: E402
 
 
 def run_agentflow(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -79,6 +79,13 @@ def commit_work_graph(repository: Path, items: list[dict]) -> None:
     git("commit", "-m", "work graph", cwd=repository)
 
 
+def approve_graph(repository: Path, data_dir: Path) -> None:
+    """Approve the Work Graph so `start --work-item` may capture from it."""
+    approve_work_graph(
+        repository=repository, data_dir=data_dir, approved_by="tester"
+    )
+
+
 class ProjectionRebuildTests(unittest.TestCase):
     def test_projection_renders_runs_work_and_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -103,6 +110,7 @@ class ProjectionRebuildTests(unittest.TestCase):
                     },
                 ],
             )
+            approve_graph(repository, data_dir)
             started = run_agentflow(
                 "start",
                 "--work-item",
@@ -251,6 +259,7 @@ class ProjectionRebuildTests(unittest.TestCase):
                     }
                 ],
             )
+            approve_graph(repository, data_dir)
             started = run_agentflow(
                 "start",
                 "--work-item",
@@ -453,6 +462,7 @@ class ProjectionAuthorityTests(unittest.TestCase):
                     }
                 ],
             )
+            approve_graph(repository, data_dir)
             previous_cwd = Path.cwd()
             try:
                 os.chdir(repository)

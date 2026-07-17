@@ -16,8 +16,11 @@ module.
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Protocol
 
@@ -122,6 +125,107 @@ def work_item_content_hash(item: dict) -> str:
     """
     canonical = json.dumps(item, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def work_graph_content_hash(items: list[dict]) -> str:
+    """Stable content hash of the entire validated Work Graph.
+
+    A Work Graph approval binds to this hash, so any later edit to any Work
+    Item — including reordering — is detectable and invalidates the approval,
+    mirroring how an Approved Revision is invalidated by any code change.
+    """
+    canonical = json.dumps(items, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _work_graph_approvals_path(data_dir: Path) -> Path:
+    """Evidence log of Work Graph approvals, stored in Agentflow Home."""
+    return data_dir / "work" / "graph-approvals.jsonl"
+
+
+def read_work_graph_approvals(data_dir: Path) -> list[dict]:
+    """Return recorded Work Graph approvals in append order. Read-only."""
+    path = _work_graph_approvals_path(data_dir)
+    if not path.is_file():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def approve_work_graph(
+    *,
+    repository: Path,
+    data_dir: Path,
+    approved_by: str,
+    backend: WorkGraphBackend | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Record an attributed, content-hashed human approval of the Work Graph.
+
+    This is a distinct evidence record (``work_graph_approved``) from candidate
+    approval (``human_approved``): it approves work intent, not a revision. The
+    record is appended under the same advisory-lock append-sequence discipline
+    as Run event logs, so concurrent approvals serialize and sequence numbers
+    stay contiguous and equal to line position.
+    """
+    graph = load_work_graph(repository, backend=backend)
+    if not graph:
+        raise ValueError("cannot approve an empty Work Graph")
+    if now is None:
+        now = datetime.now(timezone.utc)
+    path = _work_graph_approvals_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    with path.open("r+", encoding="utf-8") as approvals_file:
+        fcntl.flock(approvals_file.fileno(), fcntl.LOCK_EX)
+        lines = approvals_file.read().splitlines()
+        record = {
+            "approved_at": now.isoformat(),
+            "approved_by": approved_by,
+            "graph_hash": work_graph_content_hash(graph),
+            "repository": str(Path(repository).resolve()),
+            "sequence": len(lines) + 1,
+            "type": "work_graph_approved",
+        }
+        approvals_file.seek(0, os.SEEK_END)
+        approvals_file.write(json.dumps(record, sort_keys=True) + "\n")
+    return record
+
+
+def require_approved_work_graph(
+    *,
+    repository: Path,
+    data_dir: Path,
+    backend: WorkGraphBackend | None = None,
+) -> str:
+    """Capture gate: the current Work Graph must match its latest approval.
+
+    Returns the current graph hash when the most recent approval binds to it.
+    Raises when the graph was never approved or changed after approval — like
+    an Approved Revision, any subsequent change invalidates the approval — so
+    Run capture is refused until a human re-approves.
+    """
+    graph = load_work_graph(repository, backend=backend)
+    graph_hash = work_graph_content_hash(graph)
+    approvals = read_work_graph_approvals(data_dir)
+    if not approvals:
+        raise ValueError(
+            "Work Graph is not approved; approve it with "
+            "`agentflow work approve --approved-by <name>` before a Run "
+            "captures a Work Item"
+        )
+    approved_hash = approvals[-1]["graph_hash"]
+    if approved_hash != graph_hash:
+        raise ValueError(
+            "Work Graph changed after its approval "
+            f"(approved {approved_hash[:12]}, current {graph_hash[:12]}); "
+            "re-approve it with `agentflow work approve` before a Run "
+            "captures a Work Item"
+        )
+    return graph_hash
 
 
 def load_work_graph(

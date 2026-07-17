@@ -189,6 +189,13 @@ def start_run(
     repository = Path(_git("rev-parse", "--show-toplevel", cwd=repository))
     if _git("status", "--porcelain", "--untracked-files=all", cwd=repository):
         raise ValueError("Target Repository must be clean before starting a Run")
+    if task.get("source", {}).get("provider") == "work-graph":
+        # Capture gate: a Run may capture a Work Item only from a Work Graph
+        # whose current content hash matches its latest human approval.
+        # Imported here because work_graph imports this module at load time.
+        from .work_graph import require_approved_work_graph
+
+        require_approved_work_graph(repository=repository, data_dir=data_dir)
     base_sha = _git("rev-parse", "HEAD", cwd=repository)
     run_id = uuid.uuid4().hex
     run_dir = data_dir / "runs" / run_id

@@ -21,6 +21,7 @@ from .project_setup import initialize_repository
 from .paths import agentflow_home
 from .repository_profile import create_repository_profile
 from .work_graph import (
+    approve_work_graph,
     compute_ready_work,
     completed_work_item_ids,
     load_work_graph,
@@ -158,8 +159,15 @@ def main() -> int:
     run_parser.add_argument("task", type=Path)
     run_parser.add_argument("--data-dir", type=Path)
     work_parser = subcommands.add_parser("work")
-    work_parser.add_argument("mode", choices=("list", "ready"))
+    work_parser.add_argument("mode", choices=("list", "ready", "approve"))
     work_parser.add_argument("--repository", type=Path, default=Path("."))
+    work_parser.add_argument(
+        "--approved-by",
+        help=(
+            "record a human approval of the current Work Graph content "
+            "(required for `work approve`)"
+        ),
+    )
     work_parser.add_argument("--data-dir", type=Path)
     project_parser = subcommands.add_parser(
         "project",
@@ -457,6 +465,26 @@ def main() -> int:
         return 0
 
     if args.command == "work":
+        if args.mode == "approve":
+            if args.approved_by is None:
+                parser.error("work approve requires --approved-by")
+            record = approve_work_graph(
+                repository=args.repository,
+                data_dir=agentflow_home(args.data_dir),
+                approved_by=args.approved_by,
+            )
+            print(
+                json.dumps(
+                    {
+                        "approved_by": record["approved_by"],
+                        "graph_hash": record["graph_hash"],
+                        "repository": record["repository"],
+                        "state": "work_graph_approved",
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
         graph = load_work_graph(args.repository)
         if args.mode == "ready":
             completed = completed_work_item_ids(agentflow_home(args.data_dir))
