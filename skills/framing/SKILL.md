@@ -70,6 +70,14 @@ is then captured into a Run's immutable Task Spec by `work_item_id` and content
 hash. Do not edit a Work Item after a Run has captured it — material change
 requires a new Run.
 
+Once the graph and its approval are committed, `agentflow work verify` is a
+deterministic health check that reads the Target Repository alone (no network,
+no Agentflow Home state, so it runs identically in CI and on any machine): it
+exits zero only when every `.agentflow/work/` file validates and the
+repo-tracked approval is current for the exact graph content hash, and reports
+any corruption or staleness as a distinct, actionable message with a nonzero
+exit. Run it in CI to catch an unapproved or drifted graph before a Run does.
+
 ## Handing off to Execution
 
 Once the Work Graph is approved and committed, the deterministic half takes

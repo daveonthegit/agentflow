@@ -102,6 +102,76 @@ def validate_task_spec(value: Any) -> dict[str, Any]:
     return task
 
 
+WORK_GRAPH_APPROVED_TYPE = "work_graph_approved"
+_WORK_GRAPH_APPROVAL_FIELDS = (
+    "approved_at",
+    "approved_by",
+    "graph_hash",
+    "repository",
+    "sequence",
+    "type",
+)
+
+
+def validate_work_graph_approval(value: Any) -> dict[str, Any]:
+    """Validate one Work Graph approval record as a whole before use.
+
+    An approval record is the append-only evidence written by
+    ``work_graph.approve_work_graph`` into both the Agentflow Home log and the
+    git-tracked repository mirror. Portable verification reads the mirror on a
+    machine with no Agentflow Home state, so every record it consumes must be
+    schema-checked in full first: a record with a missing, extra, or
+    wrong-typed field is a corruption mode reported as an error, never a value
+    the health check silently trusts. Fields mirror
+    ``_append_approval_record``: an aware ISO-8601 ``approved_at``, a non-empty
+    ``approved_by`` and ``repository``, a 64-character lowercase-hex
+    ``graph_hash``, a positive-integer ``sequence``, and a ``type`` of exactly
+    ``work_graph_approved``.
+    """
+    if not isinstance(value, dict):
+        raise ContractError("approval record must be an object")
+    if set(value) != set(_WORK_GRAPH_APPROVAL_FIELDS):
+        raise ContractError(
+            "approval record fields must be exactly "
+            f"{sorted(_WORK_GRAPH_APPROVAL_FIELDS)}"
+        )
+    if value["type"] != WORK_GRAPH_APPROVED_TYPE:
+        raise ContractError(
+            f"approval record type must be {WORK_GRAPH_APPROVED_TYPE!r}"
+        )
+    for field in ("approved_by", "repository"):
+        if not isinstance(value[field], str) or not value[field].strip():
+            raise ContractError(
+                f"approval record {field} must be a non-empty string"
+            )
+    if not isinstance(value["graph_hash"], str) or not _CONTENT_HASH_PATTERN.fullmatch(
+        value["graph_hash"]
+    ):
+        raise ContractError(
+            "approval record graph_hash must be exactly 64 lowercase "
+            "hexadecimal characters"
+        )
+    # bool is a subclass of int; reject it so a stray true/false is not read as
+    # a sequence of 1/0.
+    if (
+        isinstance(value["sequence"], bool)
+        or not isinstance(value["sequence"], int)
+        or value["sequence"] < 1
+    ):
+        raise ContractError(
+            "approval record sequence must be a positive integer"
+        )
+    _require_aware_iso8601(value["approved_at"], "approval record approved_at")
+    return {
+        "approved_at": value["approved_at"],
+        "approved_by": value["approved_by"],
+        "graph_hash": value["graph_hash"],
+        "repository": value["repository"],
+        "sequence": value["sequence"],
+        "type": value["type"],
+    }
+
+
 _WORK_ITEM_FIELDS = (
     "id",
     "summary",

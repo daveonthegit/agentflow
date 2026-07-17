@@ -16,7 +16,7 @@ from .agent_adapter import (
     read_model_routing,
     record_model_routing,
 )
-from .contracts import validate_task_spec
+from .contracts import ContractError, validate_task_spec
 from .improvement import (
     MIN_RECURRENCE_RUNS,
     SKILL_BASELINE_RELATIVE_DIR,
@@ -45,6 +45,7 @@ from .repository_profile import (
 )
 from .work_graph import (
     approve_work_graph,
+    check_work_graph_health,
     compute_ready_work,
     completed_work_item_ids,
     load_work_graph,
@@ -279,7 +280,8 @@ def main() -> int:
     run_parser.add_argument("--data-dir", type=Path)
     work_parser = subcommands.add_parser("work")
     work_parser.add_argument(
-        "mode", choices=("list", "ready", "approve", "proposals", "ingest")
+        "mode",
+        choices=("list", "ready", "verify", "approve", "proposals", "ingest"),
     )
     work_parser.add_argument("--repository", type=Path, default=Path("."))
     work_parser.add_argument(
@@ -826,6 +828,28 @@ def main() -> int:
                         "graph_hash": record["graph_hash"],
                         "repository": record["repository"],
                         "state": "work_graph_approved",
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.mode == "verify":
+            # A deterministic, CI-runnable health check that reads the Target
+            # Repository alone (no network, no Agentflow Home state). Every
+            # corruption or malformation mode is a distinct, actionable message
+            # and a nonzero exit — never a traceback.
+            try:
+                health = check_work_graph_health(args.repository)
+            except ContractError as error:
+                print(str(error), file=sys.stderr)
+                return 1
+            print(
+                json.dumps(
+                    {
+                        "approved_by": health.approval["approved_by"],
+                        "graph_hash": health.graph_hash,
+                        "sequence": health.approval["sequence"],
+                        "state": "verified",
                     },
                     sort_keys=True,
                 )

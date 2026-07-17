@@ -49,6 +49,7 @@ from .contracts import (
     WORK_ITEM_STATUS_PROPOSED,
     validate_discoveries,
     validate_work_graph,
+    validate_work_graph_approval,
 )
 from .run_kernel import COMPLETED_RUN_STATES, list_runs
 from .work_md import write_work_md
@@ -377,6 +378,128 @@ def verify_repo_work_graph_approval(
         approved_graph_hash=approved_hash,
         approval=latest,
     )
+
+
+@dataclass(frozen=True)
+class WorkGraphHealth:
+    """Result of a passing ``agentflow work verify`` health check.
+
+    Returned only when the repository's Work Graph validates and its
+    repo-tracked approval is current for the exact graph content hash. Every
+    failure mode is raised as a ``ContractError`` with a distinct, actionable
+    message instead, so the command exits nonzero without a traceback.
+    ``approval`` is the schema-validated latest approval record (selected by
+    highest sequence) that binds the current graph.
+    """
+
+    graph_hash: str
+    approval: dict
+
+
+def _read_repo_approvals_for_verification(repository: Path) -> list[dict]:
+    """Read the repo approval mirror for verification, whole-record validated.
+
+    Unlike ``read_repo_work_graph_approvals`` (a raw append-ordered read), this
+    tolerates the one malformation a concurrent append can legitimately
+    produce — a torn trailing line, written while another process holds the
+    append lock — by dropping only an unparseable *final* line. Every other
+    malformation is a corruption mode reported as a ``ContractError`` with the
+    offending line number: an unparseable non-trailing line, or any line that
+    parses as JSON but fails whole-record schema validation. Records are
+    returned in file order; callers select the binding approval by sequence,
+    never by position.
+    """
+    path = _repo_work_graph_approvals_path(repository)
+    if not path.is_file():
+        return []
+    numbered = [
+        (line_number, line)
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        if line.strip()
+    ]
+    if not numbered:
+        return []
+    last_line_number = numbered[-1][0]
+    records: list[dict] = []
+    for line_number, line in numbered:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError as error:
+            if line_number == last_line_number:
+                # A concurrent append can leave a partial trailing line; a
+                # torn final line is tolerated rather than reported as corruption.
+                continue
+            raise ContractError(
+                f"approvals.jsonl:{line_number} is not valid JSON "
+                "(corrupt approval log)"
+            ) from error
+        try:
+            records.append(validate_work_graph_approval(parsed))
+        except ContractError as error:
+            raise ContractError(f"approvals.jsonl:{line_number}: {error}") from error
+    return records
+
+
+def check_work_graph_health(
+    repository: Path,
+    *,
+    backend: WorkGraphBackend | None = None,
+) -> WorkGraphHealth:
+    """Verify Work Graph and repo-tracked approval health from the repo alone.
+
+    Reads only the Target Repository — the Work Graph under
+    ``.agentflow/work/`` and the git-tracked approval mirror
+    ``.agentflow/approvals.jsonl`` — so it runs identically in CI, on a
+    teammate's machine, or anywhere the repository is checked out, needing no
+    network and no Agentflow Home state. Returns a ``WorkGraphHealth`` only
+    when every graph file validates and the current graph content hash matches
+    the binding approval; otherwise it raises a ``ContractError`` with a
+    distinct, actionable message for each failure mode:
+
+    * an invalid graph file surfaces ``load_work_graph``'s error verbatim
+      (invalid JSON with a line number, or a schema/dependency/cycle error);
+    * a corrupt approval log line, or a schema-invalid approval record, is
+      reported with its line number (a torn trailing line is tolerated);
+    * a missing approval, or one that no longer binds the current graph, is
+      reported and points at ``work approve``;
+    * an ambiguous latest approval — a sequence tie across records with
+      differing graph hashes — fails closed rather than picking by position.
+
+    The binding approval is always the record with the highest sequence, never
+    the last one in the file.
+    """
+    graph = load_work_graph(repository, backend=backend)
+    graph_hash = work_graph_content_hash(graph)
+    approvals = _read_repo_approvals_for_verification(repository)
+    if not approvals:
+        raise ContractError(
+            "Work Graph has no repo-tracked approval; approve it with "
+            "`agentflow work approve --approved-by <name>` so approval "
+            "currency is verifiable from the repository"
+        )
+    highest_sequence = max(record["sequence"] for record in approvals)
+    latest = [
+        record for record in approvals if record["sequence"] == highest_sequence
+    ]
+    binding_hashes = {record["graph_hash"] for record in latest}
+    if len(binding_hashes) > 1:
+        raise ContractError(
+            f"ambiguous latest approval: sequence {highest_sequence} appears "
+            "on approval records with differing graph hashes "
+            f"({sorted(binding_hashes)}); resolve the duplicate sequence and "
+            "re-approve with `agentflow work approve`"
+        )
+    approved_hash = latest[0]["graph_hash"]
+    if approved_hash != graph_hash:
+        raise ContractError(
+            "Work Graph changed after its approval "
+            f"(approved {approved_hash[:12]}, current {graph_hash[:12]}); "
+            "re-approve it with `agentflow work approve` so the repo-tracked "
+            "approval matches the current graph"
+        )
+    return WorkGraphHealth(graph_hash=graph_hash, approval=latest[0])
 
 
 def load_work_graph(
