@@ -535,7 +535,10 @@ class PostMergeVerificationTests(unittest.TestCase):
             )
             self.assertNotEqual(again.returncode, 0)
 
-            # The block is lifted: the pending merge now completes.
+            # The recovery restored the check (the clean-environment CI gate
+            # re-runs it for every merge candidate), so with the block lifted
+            # the pending merge now completes.
+            switch.unlink()
             merged_b = merge_run(temp_path, data_dir, run_b, environment)
             self.assertEqual(merged_b.returncode, 0, merged_b.stderr)
             self.assertEqual(json.loads(merged_b.stdout)["state"], "merged")
