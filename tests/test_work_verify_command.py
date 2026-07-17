@@ -322,6 +322,24 @@ class WorkVerifyApprovalLogTests(unittest.TestCase):
             self.assertIn("ambiguous latest approval", result.stderr)
             self.assertIn("sequence 2", result.stderr)
 
+    def test_wrong_typed_graph_hash_fails_without_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            _init_repo(repository, [HEALTH_ITEM])
+            # graph_hash is schema-declared as a 64-hex-char string; a
+            # wrong-typed value (here, JSON null) must be reported as a
+            # distinct, actionable ContractError like any other malformed
+            # field, never surface as an uncaught TypeError/traceback.
+            record = _approval_record(sequence=1, graph_hash=_current_hash())
+            record["graph_hash"] = None
+            _write_approvals(repository, [json.dumps(record, sort_keys=True)])
+
+            result = run_verify(repository)
+            self.assertNotEqual(result.returncode, 0)
+            _assert_no_traceback(result)
+            self.assertIn("approvals.jsonl:1", result.stderr)
+            self.assertIn("graph_hash", result.stderr)
+
     def test_identical_duplicate_records_are_not_ambiguous(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = Path(temp_dir) / "repo"
