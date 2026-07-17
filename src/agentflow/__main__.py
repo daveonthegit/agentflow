@@ -19,6 +19,11 @@ from .agent_adapter import (
 from .contracts import validate_task_spec
 from .improvement import (
     MIN_RECURRENCE_RUNS,
+    SKILL_BASELINE_RELATIVE_DIR,
+    adopt_skill_file,
+    apply_proposal_to_baseline,
+    approve_adoption,
+    compare_skill_baseline,
     evaluate_proposal,
     generate_proposals,
     list_proposals,
@@ -239,6 +244,56 @@ def main() -> int:
         help="fixture directory override (defaults to the shipped fixed fixtures)",
     )
     evaluate_parser.add_argument("--data-dir", type=Path)
+    adopt_parser = subcommands.add_parser(
+        "adopt",
+        help=(
+            "record an attributed Adoption Gate approval of a passing "
+            "Improvement Proposal and apply it to its baseline"
+        ),
+    )
+    adopt_parser.add_argument("proposal_id")
+    adopt_parser.add_argument("--approved-by", required=True)
+    adopt_parser.add_argument(
+        "--repository",
+        type=Path,
+        default=Path("."),
+        help="Target Repository (required for repository_profile proposals)",
+    )
+    adopt_parser.add_argument("--data-dir", type=Path)
+    skill_diff_parser = subcommands.add_parser(
+        "skill-diff",
+        help=(
+            "compare the local skill baseline against an upstream copy and "
+            "record a reviewable per-file diff (nothing is adopted)"
+        ),
+    )
+    skill_diff_parser.add_argument("--upstream", type=Path, required=True)
+    skill_diff_parser.add_argument(
+        "--repository",
+        type=Path,
+        default=Path("."),
+        help="Agentflow repository containing the skill baseline",
+    )
+    skill_diff_parser.add_argument("--data-dir", type=Path)
+    adopt_skill_parser = subcommands.add_parser(
+        "adopt-skill",
+        help=(
+            "selectively adopt one reviewed upstream skill file through the "
+            "Adoption Gate (attributed, content-hashed, evidence-recorded)"
+        ),
+    )
+    adopt_skill_parser.add_argument(
+        "path", help="skill file to adopt, relative to the skill baseline"
+    )
+    adopt_skill_parser.add_argument("--upstream", type=Path, required=True)
+    adopt_skill_parser.add_argument("--approved-by", required=True)
+    adopt_skill_parser.add_argument(
+        "--repository",
+        type=Path,
+        default=Path("."),
+        help="Agentflow repository containing the skill baseline",
+    )
+    adopt_skill_parser.add_argument("--data-dir", type=Path)
     serve_parser = subcommands.add_parser(
         "serve",
         help=(
@@ -619,6 +674,50 @@ def main() -> int:
             fixtures_dir=args.fixtures,
         )
         print(json.dumps(evaluation, sort_keys=True))
+        return 0
+
+    if args.command == "adopt":
+        data_dir = agentflow_home(args.data_dir)
+        adoption = approve_adoption(
+            data_dir=data_dir,
+            proposal_id=args.proposal_id,
+            approved_by=args.approved_by,
+        )
+        applied = apply_proposal_to_baseline(
+            data_dir=data_dir,
+            proposal_id=args.proposal_id,
+            repository=args.repository,
+        )
+        print(
+            json.dumps(
+                {
+                    "adoption": adoption,
+                    "applied": applied,
+                    "state": "applied",
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if args.command == "skill-diff":
+        record = compare_skill_baseline(
+            baseline_dir=args.repository / SKILL_BASELINE_RELATIVE_DIR,
+            upstream_dir=args.upstream,
+            data_dir=agentflow_home(args.data_dir),
+        )
+        print(json.dumps(record, sort_keys=True))
+        return 0
+
+    if args.command == "adopt-skill":
+        record = adopt_skill_file(
+            baseline_dir=args.repository / SKILL_BASELINE_RELATIVE_DIR,
+            upstream_dir=args.upstream,
+            data_dir=agentflow_home(args.data_dir),
+            path=args.path,
+            approved_by=args.approved_by,
+        )
+        print(json.dumps(record, sort_keys=True))
         return 0
 
     if args.command == "serve":

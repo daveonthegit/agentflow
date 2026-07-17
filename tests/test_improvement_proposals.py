@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -13,13 +14,19 @@ from agentflow.improvement import (
     DEFAULT_FIXTURES_DIR,
     KIND_RECURRING_CHECK_FAILURE,
     KIND_RECURRING_REPAIR_LOOP,
+    WORKFLOW_CONFIG_FILENAME,
+    adopt_skill_file,
     apply_proposal_to_baseline,
+    approve_adoption,
+    compare_skill_baseline,
     evaluate_proposal,
     generate_proposals,
     list_proposals,
     proposal_id_for,
     read_proposal,
+    read_skill_adoptions,
 )
+from agentflow.repository_profile import PROFILE_RELATIVE_PATH
 
 FAILING_CHECK = "python3 -m pytest tests/ -x -q"
 
@@ -337,14 +344,16 @@ class BaselineProtectionTests(unittest.TestCase):
                 data_dir=self.data_dir, proposal_id=self.proposal_id
             )
 
-    def test_a_passing_evaluation_still_stops_at_the_adoption_gate_seam(
+    def test_a_passing_evaluation_still_stops_at_the_adoption_gate(
         self,
     ) -> None:
+        # Passing evaluation alone is not enough: without a human adoption
+        # approval, the baseline stays unchanged.
         evaluation = evaluate_proposal(
             data_dir=self.data_dir, proposal_id=self.proposal_id
         )
         self.assertTrue(evaluation["passed"])
-        with self.assertRaises(NotImplementedError) as caught:
+        with self.assertRaises(ValueError) as caught:
             apply_proposal_to_baseline(
                 data_dir=self.data_dir, proposal_id=self.proposal_id
             )
@@ -356,6 +365,43 @@ class BaselineProtectionTests(unittest.TestCase):
             )["state"],
             "evaluated",
         )
+
+    def test_a_failing_evaluation_cannot_be_adoption_approved(self) -> None:
+        fixtures = Path(self._temp.name) / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "always-fails.json").write_text(
+            json.dumps(
+                {
+                    "name": "always fails",
+                    "kind": KIND_RECURRING_CHECK_FAILURE,
+                    "min_runs": 3,
+                    "runs": [],
+                    "expected_subjects": ["unreachable"],
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        evaluate_proposal(
+            data_dir=self.data_dir,
+            proposal_id=self.proposal_id,
+            fixtures_dir=fixtures,
+        )
+        with self.assertRaises(ValueError):
+            approve_adoption(
+                data_dir=self.data_dir,
+                proposal_id=self.proposal_id,
+                approved_by="daveonthegit",
+            )
+
+    def test_an_unevaluated_proposal_cannot_be_adoption_approved(self) -> None:
+        with self.assertRaises(ValueError):
+            approve_adoption(
+                data_dir=self.data_dir,
+                proposal_id=self.proposal_id,
+                approved_by="daveonthegit",
+            )
 
     def test_regeneration_leaves_an_evaluated_proposal_untouched(self) -> None:
         evaluate_proposal(data_dir=self.data_dir, proposal_id=self.proposal_id)
@@ -370,6 +416,283 @@ class BaselineProtectionTests(unittest.TestCase):
             ),
             evaluated,
         )
+
+
+class AdoptionGateTests(unittest.TestCase):
+    """A baseline changes only through an attributed, content-hashed adoption."""
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.data_dir = Path(self._temp.name) / "home"
+        for index in range(3):
+            write_run_with_failed_check(self.data_dir, f"run-{index}")
+        self.proposal_id = generate_proposals(data_dir=self.data_dir)[0][
+            "proposal_id"
+        ]
+        evaluation = evaluate_proposal(
+            data_dir=self.data_dir, proposal_id=self.proposal_id
+        )
+        assert evaluation["passed"]
+        self.repository = Path(self._temp.name) / "repo"
+        self.profile_path = self.repository / PROFILE_RELATIVE_PATH
+        self.profile_path.parent.mkdir(parents=True)
+        self.profile_path.write_text(
+            json.dumps({"checks": [["true"]], "schema_version": 1}, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def _proposal_path(self) -> Path:
+        return (
+            self.data_dir / "proposals" / self.proposal_id / "proposal.json"
+        )
+
+    def test_an_approved_proposal_applies_with_attributed_evidence(self) -> None:
+        adoption = approve_adoption(
+            data_dir=self.data_dir,
+            proposal_id=self.proposal_id,
+            approved_by="daveonthegit",
+        )
+        self.assertEqual(adoption["type"], "adoption_approved")
+        self.assertEqual(adoption["approved_by"], "daveonthegit")
+        self.assertIn("approved_at", adoption)
+        self.assertEqual(len(adoption["proposal_hash"]), 64)
+        self.assertEqual(
+            read_proposal(
+                data_dir=self.data_dir, proposal_id=self.proposal_id
+            )["state"],
+            "approved",
+        )
+
+        applied = apply_proposal_to_baseline(
+            data_dir=self.data_dir,
+            proposal_id=self.proposal_id,
+            repository=self.repository,
+        )
+        self.assertEqual(applied["type"], "proposal_applied")
+        self.assertEqual(applied["approved_by"], "daveonthegit")
+        self.assertEqual(applied["proposal_hash"], adoption["proposal_hash"])
+        self.assertEqual(applied["baseline_path"], str(self.profile_path))
+        # The evidence is persisted and drives the derived state.
+        recorded = json.loads(
+            (
+                self.data_dir / "proposals" / self.proposal_id / "applied.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(recorded, applied)
+        self.assertEqual(
+            read_proposal(
+                data_dir=self.data_dir, proposal_id=self.proposal_id
+            )["state"],
+            "applied",
+        )
+        # The baseline actually changed, deterministically keyed by proposal.
+        profile = json.loads(self.profile_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [advisory["proposal_id"] for advisory in profile["advisories"]],
+            [self.proposal_id],
+        )
+        self.assertEqual(profile["advisories"][0]["subject"], FAILING_CHECK)
+        # Untouched profile content survives the application.
+        self.assertEqual(profile["checks"], [["true"]])
+
+    def test_a_proposal_edited_after_approval_is_stale_and_refuses(self) -> None:
+        approve_adoption(
+            data_dir=self.data_dir,
+            proposal_id=self.proposal_id,
+            approved_by="daveonthegit",
+        )
+        record = json.loads(self._proposal_path().read_text(encoding="utf-8"))
+        record["change"] = "something else entirely"
+        self._proposal_path().write_text(
+            json.dumps(record, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        # The stale approval no longer advances the derived state.
+        self.assertEqual(
+            read_proposal(
+                data_dir=self.data_dir, proposal_id=self.proposal_id
+            )["state"],
+            "evaluated",
+        )
+        with self.assertRaises(ValueError) as caught:
+            apply_proposal_to_baseline(
+                data_dir=self.data_dir,
+                proposal_id=self.proposal_id,
+                repository=self.repository,
+            )
+        self.assertIn("stale", str(caught.exception))
+        profile = json.loads(self.profile_path.read_text(encoding="utf-8"))
+        self.assertNotIn("advisories", profile)
+
+    def test_an_applied_proposal_cannot_apply_twice(self) -> None:
+        approve_adoption(
+            data_dir=self.data_dir,
+            proposal_id=self.proposal_id,
+            approved_by="daveonthegit",
+        )
+        apply_proposal_to_baseline(
+            data_dir=self.data_dir,
+            proposal_id=self.proposal_id,
+            repository=self.repository,
+        )
+        with self.assertRaises(ValueError) as caught:
+            apply_proposal_to_baseline(
+                data_dir=self.data_dir,
+                proposal_id=self.proposal_id,
+                repository=self.repository,
+            )
+        self.assertIn("already applied", str(caught.exception))
+
+    def test_a_workflow_config_proposal_applies_to_agentflow_home(self) -> None:
+        data_dir = Path(self._temp.name) / "workflow-home"
+        for index in range(3):
+            write_run_with_repair_loop(data_dir, f"run-{index}")
+        proposal_id = generate_proposals(data_dir=data_dir)[0]["proposal_id"]
+        self.assertTrue(
+            evaluate_proposal(data_dir=data_dir, proposal_id=proposal_id)[
+                "passed"
+            ]
+        )
+        approve_adoption(
+            data_dir=data_dir, proposal_id=proposal_id, approved_by="daveonthegit"
+        )
+        applied = apply_proposal_to_baseline(
+            data_dir=data_dir, proposal_id=proposal_id
+        )
+        baseline_path = data_dir / WORKFLOW_CONFIG_FILENAME
+        self.assertEqual(applied["baseline_path"], str(baseline_path))
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [advisory["subject"] for advisory in baseline["advisories"]],
+            ["tests_failed"],
+        )
+
+
+class SkillBaselineAdoptionTests(unittest.TestCase):
+    """Upstream skill changes are compared, then selectively human-adopted."""
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        temp_path = Path(self._temp.name)
+        self.data_dir = temp_path / "home"
+        self.baseline = temp_path / "skills" / "agentflow"
+        self.upstream = temp_path / "upstream"
+        (self.baseline / "agents").mkdir(parents=True)
+        (self.baseline / "SKILL.md").write_text("# local skill\n", encoding="utf-8")
+        (self.baseline / "agents" / "openai.yaml").write_text(
+            "role: builder\n", encoding="utf-8"
+        )
+        self.upstream.mkdir()
+        (self.upstream / "SKILL.md").write_text(
+            "# upstream skill\n", encoding="utf-8"
+        )
+        (self.upstream / "NEW.md").write_text("# new guidance\n", encoding="utf-8")
+
+    def _compare(self) -> dict:
+        return compare_skill_baseline(
+            baseline_dir=self.baseline,
+            upstream_dir=self.upstream,
+            data_dir=self.data_dir,
+        )
+
+    def _adopt(self, path: str, approved_by: str = "daveonthegit") -> dict:
+        return adopt_skill_file(
+            baseline_dir=self.baseline,
+            upstream_dir=self.upstream,
+            data_dir=self.data_dir,
+            path=path,
+            approved_by=approved_by,
+        )
+
+    def test_comparison_records_a_per_file_diff_summary(self) -> None:
+        record = self._compare()
+        self.assertEqual(record["type"], "skill_baseline_compared")
+        by_path = {entry["path"]: entry for entry in record["files"]}
+        self.assertEqual(by_path["SKILL.md"]["status"], "changed")
+        self.assertEqual(by_path["NEW.md"]["status"], "added")
+        self.assertEqual(by_path["agents/openai.yaml"]["status"], "removed")
+        self.assertIn("baseline_sha256", by_path["SKILL.md"])
+        self.assertIn("upstream_sha256", by_path["SKILL.md"])
+        self.assertNotIn("baseline_sha256", by_path["NEW.md"])
+        # The comparison is a persisted, reviewable record.
+        stored = json.loads(
+            (self.data_dir / "skills" / "comparison.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(stored, record)
+        # Comparing adopts nothing.
+        self.assertEqual(
+            (self.baseline / "SKILL.md").read_text(encoding="utf-8"),
+            "# local skill\n",
+        )
+        self.assertFalse((self.baseline / "NEW.md").exists())
+
+    def test_selective_adoption_applies_only_the_approved_file(self) -> None:
+        self._compare()
+        record = self._adopt("SKILL.md")
+        self.assertEqual(
+            (self.baseline / "SKILL.md").read_text(encoding="utf-8"),
+            "# upstream skill\n",
+        )
+        # Only the approved file changed; the other upstream file did not land.
+        self.assertFalse((self.baseline / "NEW.md").exists())
+        self.assertTrue((self.baseline / "agents" / "openai.yaml").exists())
+        # The adoption evidence is attributed and content-hashed.
+        self.assertEqual(record["type"], "skill_file_adopted")
+        self.assertEqual(record["approved_by"], "daveonthegit")
+        self.assertEqual(record["path"], "SKILL.md")
+        self.assertEqual(
+            record["upstream_sha256"],
+            hashlib.sha256(b"# upstream skill\n").hexdigest(),
+        )
+        self.assertEqual(record["sequence"], 1)
+        self.assertEqual(read_skill_adoptions(self.data_dir), [record])
+
+    def test_adopting_an_added_file_creates_it_in_the_baseline(self) -> None:
+        self._compare()
+        self._adopt("NEW.md")
+        self.assertEqual(
+            (self.baseline / "NEW.md").read_text(encoding="utf-8"),
+            "# new guidance\n",
+        )
+        self.assertEqual(len(read_skill_adoptions(self.data_dir)), 1)
+
+    def test_adoption_refuses_without_a_comparison_record(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            self._adopt("SKILL.md")
+        self.assertIn("skill-diff", str(caught.exception))
+
+    def test_adoption_refuses_when_upstream_changed_after_the_review(
+        self,
+    ) -> None:
+        self._compare()
+        (self.upstream / "SKILL.md").write_text(
+            "# tampered after review\n", encoding="utf-8"
+        )
+        with self.assertRaises(ValueError) as caught:
+            self._adopt("SKILL.md")
+        self.assertIn("stale", str(caught.exception))
+        self.assertEqual(
+            (self.baseline / "SKILL.md").read_text(encoding="utf-8"),
+            "# local skill\n",
+        )
+
+    def test_adoption_refuses_identical_removed_and_escaping_paths(self) -> None:
+        (self.upstream / "same.md").write_text("same\n", encoding="utf-8")
+        (self.baseline / "same.md").write_text("same\n", encoding="utf-8")
+        self._compare()
+        with self.assertRaises(ValueError):
+            self._adopt("same.md")
+        with self.assertRaises(ValueError):
+            self._adopt("agents/openai.yaml")  # removed upstream
+        with self.assertRaises(ValueError):
+            self._adopt("../outside.md")
+        with self.assertRaises(ValueError):
+            self._adopt("SKILL.md", approved_by="")
 
 
 if __name__ == "__main__":

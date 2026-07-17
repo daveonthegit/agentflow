@@ -1,7 +1,7 @@
 """Improvement Proposals: deterministic learning from repeated Run Evidence.
 
-A proposal is a *record*, never an applied change. This module covers the two
-stages that precede the Adoption Gate:
+A proposal is a *record* until it clears the Adoption Gate. This module
+covers the full lifecycle:
 
 1. **Generation** — :func:`generate_proposals` replays stored Run Evidence,
    detects patterns that recur across distinct Runs (the same Repository
@@ -14,20 +14,37 @@ stages that precede the Adoption Gate:
    :data:`DEFAULT_FIXTURES_DIR` (recorded evidence corpora, including
    historical false-positive cases that must never detect). The pass/fail
    result and its reasons are recorded as evidence in ``evaluation.json``.
+3. **Adoption Gate** — :func:`approve_adoption` records an attributed,
+   content-hashed human approval (``adoption.json``) of a passing proposal.
+   Like an Approved Revision, the approval binds to the exact proposal
+   content: an edit after approval makes the approval stale.
+4. **Application** — :func:`apply_proposal_to_baseline` is the single choke
+   point through which a proposal may change a baseline. It refuses
+   unevaluated, failing, unapproved, stale-approved, and already-applied
+   proposals; otherwise it applies the change deterministically and records
+   attributed ``applied.json`` evidence.
 
-Baselines — Repository Profiles, skills, workflow configuration — are never
-touched here. :func:`apply_proposal_to_baseline` enforces that a proposal
-which has not passed evaluation cannot change any baseline, and that even a
-passing one stops at the ``evaluated`` state: actually changing a baseline is
-the Adoption Gate's job (human approval), a deliberately unimplemented seam.
+The upstream-skill counterpart of the same gate also lives here:
+:func:`compare_skill_baseline` records a per-file diff of the local skill
+baseline against an operator-supplied upstream copy, and
+:func:`adopt_skill_file` selectively adopts one reviewed file through an
+attributed, content-hashed approval bound to that comparison. Together with
+:func:`apply_proposal_to_baseline` these are the only functions in Agentflow
+that write a baseline; both sit behind the Adoption Gate, and nothing is ever
+auto-adopted.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath
 from typing import Callable
+
+from .repository_profile import PROFILE_RELATIVE_PATH
 
 # A pattern must recur across at least this many distinct Runs before it
 # motivates a proposal. Repetition inside a single Run (e.g. one Run failing
@@ -53,6 +70,14 @@ PROPOSAL_ID_LENGTH = 16
 # The fixed fixture corpus shipped with Agentflow: recorded evidence cases,
 # including historical failures the detector must not regress on.
 DEFAULT_FIXTURES_DIR = Path(__file__).parent / "eval_fixtures" / "improvement"
+
+# The workflow-configuration baseline lives in Agentflow Home; the Repository
+# Profile baseline lives in the Target Repository at PROFILE_RELATIVE_PATH.
+WORKFLOW_CONFIG_FILENAME = "workflow-config.json"
+
+# The local skill baseline an upstream comparison targets, relative to the
+# Agentflow repository root.
+SKILL_BASELINE_RELATIVE_DIR = Path("skills/agentflow")
 
 
 def _proposals_dir(data_dir: Path) -> Path:
@@ -231,24 +256,54 @@ def generate_proposals(
     return proposals
 
 
-def read_proposal(*, data_dir: Path, proposal_id: str) -> dict:
-    """Return the proposal record with its derived state and any evaluation.
+def proposal_content_hash(record: dict) -> str:
+    """Stable content hash of a stored proposal record.
 
-    State is derived from evidence on disk, mirroring Run State: ``proposed``
-    until an evaluation record exists, then ``evaluated``. There is no state
-    beyond ``evaluated`` here — adoption belongs to the future Adoption Gate.
+    An adoption approval binds to this hash, so any later edit to the
+    proposal — whitespace aside — is detectable and makes the approval stale,
+    mirroring how an Approved Revision is invalidated by any code change.
     """
-    proposal_dir = _proposal_dir(data_dir, proposal_id)
-    proposal_path = proposal_dir / "proposal.json"
+    canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _stored_proposal_record(data_dir: Path, proposal_id: str) -> dict:
+    proposal_path = _proposal_dir(data_dir, proposal_id) / "proposal.json"
     if not proposal_path.is_file():
         raise ValueError(f"no proposal {proposal_id}")
-    record = json.loads(proposal_path.read_text(encoding="utf-8"))
+    return json.loads(proposal_path.read_text(encoding="utf-8"))
+
+
+def read_proposal(*, data_dir: Path, proposal_id: str) -> dict:
+    """Return the proposal record with its derived state and gate evidence.
+
+    State is derived from evidence on disk, mirroring Run State: ``proposed``
+    until an evaluation record exists, ``evaluated`` once one does,
+    ``approved`` once an adoption approval binds to the current proposal
+    content (a stale approval leaves the proposal ``evaluated``), and
+    ``applied`` once application evidence exists.
+    """
+    proposal_dir = _proposal_dir(data_dir, proposal_id)
+    record = _stored_proposal_record(data_dir, proposal_id)
+    content_hash = proposal_content_hash(record)
+    record["state"] = "proposed"
     evaluation_path = proposal_dir / "evaluation.json"
     if evaluation_path.is_file():
         record["evaluation"] = json.loads(evaluation_path.read_text(encoding="utf-8"))
         record["state"] = "evaluated"
-    else:
-        record["state"] = "proposed"
+    adoption_path = proposal_dir / "adoption.json"
+    if adoption_path.is_file():
+        adoption = json.loads(adoption_path.read_text(encoding="utf-8"))
+        record["adoption"] = adoption
+        if (
+            record["state"] == "evaluated"
+            and adoption["proposal_hash"] == content_hash
+        ):
+            record["state"] = "approved"
+    applied_path = proposal_dir / "applied.json"
+    if applied_path.is_file():
+        record["applied"] = json.loads(applied_path.read_text(encoding="utf-8"))
+        record["state"] = "applied"
     return record
 
 
@@ -371,15 +426,103 @@ def evaluate_proposal(
     return evaluation
 
 
-def apply_proposal_to_baseline(*, data_dir: Path, proposal_id: str) -> None:
-    """Refuse to change any baseline via the proposal path.
+def approve_adoption(
+    *,
+    data_dir: Path,
+    proposal_id: str,
+    approved_by: str,
+    now: datetime | None = None,
+) -> dict:
+    """Record the Adoption Gate's human approval of a passing proposal.
 
-    A proposal that has not passed evaluation is rejected outright. A proposal
-    that has passed still cannot change a baseline: adoption requires the
-    Adoption Gate (explicit verification plus human approval), which is a
-    separate, deliberately unimplemented seam. This function is the single
-    choke point the future gate will replace, so no baseline write can ever
-    bypass it.
+    The approval is attributed and content-hashed: it binds to the exact
+    proposal content on disk at approval time, so a proposal edited afterwards
+    is stale and cannot be applied until a human re-approves the new content.
+    Only a proposal whose evaluation passed may be approved; approval records
+    intent and never changes a baseline itself.
+    """
+    if not approved_by:
+        raise ValueError("an adoption approval requires --approved-by")
+    proposal = read_proposal(data_dir=data_dir, proposal_id=proposal_id)
+    evaluation = proposal.get("evaluation")
+    if evaluation is None or not evaluation["passed"]:
+        raise ValueError(
+            f"proposal {proposal_id} has not passed evaluation; "
+            "the Adoption Gate only accepts passing proposals"
+        )
+    if now is None:
+        now = datetime.now(timezone.utc)
+    record = {
+        "approved_at": now.isoformat(),
+        "approved_by": approved_by,
+        "proposal_hash": proposal_content_hash(
+            _stored_proposal_record(data_dir, proposal_id)
+        ),
+        "proposal_id": proposal_id,
+        "type": "adoption_approved",
+    }
+    (_proposal_dir(data_dir, proposal_id) / "adoption.json").write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return record
+
+
+def _advisory_entry(proposal: dict) -> dict:
+    """The minimal, deterministic baseline change a proposal applies."""
+    return {
+        "change": proposal["change"],
+        "kind": proposal["kind"],
+        "proposal_id": proposal["proposal_id"],
+        "subject": proposal["subject"],
+    }
+
+
+def _apply_advisory(baseline_path: Path, entry: dict) -> None:
+    """Add an adopted advisory to a JSON baseline document, deterministically.
+
+    Advisories are keyed by proposal id and kept sorted, so applying the same
+    adopted proposal to the same baseline always yields the same bytes.
+    """
+    baseline = (
+        json.loads(baseline_path.read_text(encoding="utf-8"))
+        if baseline_path.is_file()
+        else {}
+    )
+    advisories = [
+        advisory
+        for advisory in baseline.get("advisories", [])
+        if advisory["proposal_id"] != entry["proposal_id"]
+    ]
+    advisories.append(entry)
+    baseline["advisories"] = sorted(
+        advisories, key=lambda advisory: advisory["proposal_id"]
+    )
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text(
+        json.dumps(baseline, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def apply_proposal_to_baseline(
+    *,
+    data_dir: Path,
+    proposal_id: str,
+    repository: Path | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Apply an adopted proposal to its baseline — the single choke point.
+
+    No baseline changes through any other proposal code path. A proposal must
+    have passed evaluation, carry an adoption approval whose content hash
+    still matches the proposal on disk (an edit after approval is stale), and
+    not already be applied. Application is minimal and deterministic: the
+    proposal's change is recorded as an adopted advisory in the target
+    baseline document — ``workflow_config`` proposals in Agentflow Home's
+    ``workflow-config.json``, ``repository_profile`` proposals in the Target
+    Repository's profile — and attributed ``applied.json`` evidence is
+    written under the proposal directory.
     """
     proposal = read_proposal(data_dir=data_dir, proposal_id=proposal_id)
     evaluation = proposal.get("evaluation")
@@ -388,8 +531,260 @@ def apply_proposal_to_baseline(*, data_dir: Path, proposal_id: str) -> None:
             f"proposal {proposal_id} has not passed evaluation; "
             "baselines remain unchanged"
         )
-    raise NotImplementedError(
-        f"proposal {proposal_id} passed evaluation but the Adoption Gate "
-        "(human approval) is not implemented; a passing evaluation alone "
-        "never changes a baseline"
+    adoption = proposal.get("adoption")
+    if adoption is None:
+        raise ValueError(
+            f"proposal {proposal_id} passed evaluation but has not been "
+            "approved through the Adoption Gate; adopt it with "
+            f"`agentflow adopt {proposal_id} --approved-by <name>` — a "
+            "passing evaluation alone never changes a baseline"
+        )
+    content_hash = proposal_content_hash(
+        _stored_proposal_record(data_dir, proposal_id)
     )
+    if adoption["proposal_hash"] != content_hash:
+        raise ValueError(
+            f"proposal {proposal_id} changed after its adoption approval "
+            f"(approved {adoption['proposal_hash'][:12]}, current "
+            f"{content_hash[:12]}); the approval is stale — re-approve the "
+            "current content before it can change a baseline"
+        )
+    if proposal.get("applied") is not None:
+        raise ValueError(
+            f"proposal {proposal_id} was already applied; baselines change "
+            "at most once per adoption"
+        )
+    target = proposal["target"]
+    if target == "workflow_config":
+        baseline_path = data_dir / WORKFLOW_CONFIG_FILENAME
+    elif target == "repository_profile":
+        if repository is None:
+            raise ValueError(
+                "applying a repository_profile proposal requires the Target "
+                "Repository path"
+            )
+        baseline_path = repository / PROFILE_RELATIVE_PATH
+        if not baseline_path.is_file():
+            raise ValueError(
+                f"no Repository Profile at {baseline_path}; create one with "
+                "`agentflow profile` before adopting profile proposals"
+            )
+    else:
+        raise ValueError(f"unknown baseline target {target!r}")
+    _apply_advisory(baseline_path, _advisory_entry(proposal))
+    if now is None:
+        now = datetime.now(timezone.utc)
+    applied = {
+        "applied_at": now.isoformat(),
+        "approved_by": adoption["approved_by"],
+        "baseline_path": str(baseline_path),
+        "proposal_hash": content_hash,
+        "proposal_id": proposal_id,
+        "target": target,
+        "type": "proposal_applied",
+    }
+    (_proposal_dir(data_dir, proposal_id) / "applied.json").write_text(
+        json.dumps(applied, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return applied
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _skill_tree_hashes(root: Path) -> dict[str, str]:
+    """Relative posix path -> content sha256 for every file under ``root``."""
+    if not root.is_dir():
+        return {}
+    return {
+        path.relative_to(root).as_posix(): _file_sha256(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _skill_comparison_path(data_dir: Path) -> Path:
+    return data_dir / "skills" / "comparison.json"
+
+
+def _skill_adoptions_path(data_dir: Path) -> Path:
+    return data_dir / "skills" / "adoptions.jsonl"
+
+
+def compare_skill_baseline(
+    *,
+    baseline_dir: Path,
+    upstream_dir: Path,
+    data_dir: Path,
+    now: datetime | None = None,
+) -> dict:
+    """Compare the local skill baseline against an upstream copy.
+
+    Produces a per-file diff summary — ``added``, ``removed``, ``changed``,
+    ``unchanged``, each with the content hashes involved — and persists it as
+    the reviewable comparison record selective adoption binds to. Comparing is
+    read-only with respect to both trees; nothing is ever auto-adopted.
+    """
+    if not upstream_dir.is_dir():
+        raise ValueError(f"no upstream skill directory at {upstream_dir}")
+    baseline_hashes = _skill_tree_hashes(baseline_dir)
+    upstream_hashes = _skill_tree_hashes(upstream_dir)
+    files = []
+    for path in sorted(set(baseline_hashes) | set(upstream_hashes)):
+        entry: dict = {"path": path}
+        baseline_hash = baseline_hashes.get(path)
+        upstream_hash = upstream_hashes.get(path)
+        if baseline_hash is not None:
+            entry["baseline_sha256"] = baseline_hash
+        if upstream_hash is not None:
+            entry["upstream_sha256"] = upstream_hash
+        if baseline_hash is None:
+            entry["status"] = "added"
+        elif upstream_hash is None:
+            entry["status"] = "removed"
+        elif baseline_hash != upstream_hash:
+            entry["status"] = "changed"
+        else:
+            entry["status"] = "unchanged"
+        files.append(entry)
+    if now is None:
+        now = datetime.now(timezone.utc)
+    record = {
+        "baseline_dir": str(Path(baseline_dir).resolve()),
+        "compared_at": now.isoformat(),
+        "files": files,
+        "type": "skill_baseline_compared",
+        "upstream_dir": str(Path(upstream_dir).resolve()),
+    }
+    comparison_path = _skill_comparison_path(data_dir)
+    comparison_path.parent.mkdir(parents=True, exist_ok=True)
+    comparison_path.write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return record
+
+
+def read_skill_adoptions(data_dir: Path) -> list[dict]:
+    """Return recorded skill-file adoptions in append order. Read-only."""
+    path = _skill_adoptions_path(data_dir)
+    if not path.is_file():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def adopt_skill_file(
+    *,
+    baseline_dir: Path,
+    upstream_dir: Path,
+    data_dir: Path,
+    path: str,
+    approved_by: str,
+    now: datetime | None = None,
+) -> dict:
+    """Adopt exactly one reviewed upstream skill file through the Adoption Gate.
+
+    The adoption binds to the latest comparison record: the file must appear
+    there as ``added`` or ``changed``, and both the upstream and baseline
+    content must still hash to what the comparison recorded — either tree
+    changing afterwards makes the review stale and refuses adoption until the
+    operator re-runs the comparison. On success the exact reviewed upstream
+    content replaces the baseline file, and an attributed, content-hashed
+    evidence record is appended under the same advisory-lock append-sequence
+    discipline as other approval logs. Files are only ever adopted one at a
+    time, by name, with attribution; there is no bulk or automatic adoption.
+    """
+    if not approved_by:
+        raise ValueError("adopting a skill file requires --approved-by")
+    relative = PurePosixPath(path)
+    if not path or relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(
+            "skill file paths must be relative to the skill baseline and "
+            "must not escape it"
+        )
+    comparison_path = _skill_comparison_path(data_dir)
+    if not comparison_path.is_file():
+        raise ValueError(
+            "no skill comparison record; run `agentflow skill-diff "
+            "--upstream <path>` and review it before adopting"
+        )
+    comparison = json.loads(comparison_path.read_text(encoding="utf-8"))
+    if comparison["upstream_dir"] != str(Path(upstream_dir).resolve()) or (
+        comparison["baseline_dir"] != str(Path(baseline_dir).resolve())
+    ):
+        raise ValueError(
+            "the recorded skill comparison covers different directories; "
+            "re-run `agentflow skill-diff` for this upstream before adopting"
+        )
+    entry = next(
+        (item for item in comparison["files"] if item["path"] == str(relative)),
+        None,
+    )
+    if entry is None:
+        raise ValueError(
+            f"{relative} does not appear in the skill comparison record; "
+            "re-run `agentflow skill-diff` and review it before adopting"
+        )
+    if entry["status"] == "unchanged":
+        raise ValueError(
+            f"{relative} is identical to the baseline; nothing to adopt"
+        )
+    if entry["status"] == "removed":
+        raise ValueError(
+            f"{relative} does not exist upstream; the Adoption Gate only "
+            "adopts reviewed upstream content, never deletions"
+        )
+    upstream_path = upstream_dir / relative
+    if not upstream_path.is_file():
+        raise ValueError(
+            f"{relative} disappeared upstream after the comparison; re-run "
+            "`agentflow skill-diff` before adopting"
+        )
+    upstream_bytes = upstream_path.read_bytes()
+    upstream_hash = hashlib.sha256(upstream_bytes).hexdigest()
+    if upstream_hash != entry["upstream_sha256"]:
+        raise ValueError(
+            f"{relative} changed upstream after the comparison "
+            f"(reviewed {entry['upstream_sha256'][:12]}, current "
+            f"{upstream_hash[:12]}); the review is stale — re-run "
+            "`agentflow skill-diff` and review the current content"
+        )
+    baseline_path = baseline_dir / relative
+    baseline_hash = (
+        _file_sha256(baseline_path) if baseline_path.is_file() else None
+    )
+    if baseline_hash != entry.get("baseline_sha256"):
+        raise ValueError(
+            f"the baseline copy of {relative} changed after the comparison; "
+            "the review is stale — re-run `agentflow skill-diff` and review "
+            "the current diff"
+        )
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_bytes(upstream_bytes)
+    if now is None:
+        now = datetime.now(timezone.utc)
+    adoptions_path = _skill_adoptions_path(data_dir)
+    adoptions_path.parent.mkdir(parents=True, exist_ok=True)
+    adoptions_path.touch(exist_ok=True)
+    with adoptions_path.open("r+", encoding="utf-8") as adoptions_file:
+        fcntl.flock(adoptions_file.fileno(), fcntl.LOCK_EX)
+        lines = adoptions_file.read().splitlines()
+        record = {
+            "adopted_at": now.isoformat(),
+            "approved_by": approved_by,
+            "baseline_dir": comparison["baseline_dir"],
+            "path": str(relative),
+            "sequence": len(lines) + 1,
+            "type": "skill_file_adopted",
+            "upstream_dir": comparison["upstream_dir"],
+            "upstream_sha256": upstream_hash,
+        }
+        adoptions_file.seek(0, os.SEEK_END)
+        adoptions_file.write(json.dumps(record, sort_keys=True) + "\n")
+    return record
