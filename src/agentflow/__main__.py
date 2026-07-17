@@ -24,6 +24,11 @@ from .improvement import (
     list_proposals,
 )
 from .merger import merge_approved_run
+from .post_merge import (
+    list_recovery_proposals,
+    resolve_post_merge_failure,
+    verify_merged_run,
+)
 from .project_setup import initialize_repository
 from .paths import agentflow_home
 from .repository_profile import MERGE_STRATEGIES, create_repository_profile
@@ -150,6 +155,37 @@ def main() -> int:
     merge_parser.add_argument("run_id")
     merge_parser.add_argument("--merged-by", required=True)
     merge_parser.add_argument("--data-dir", type=Path)
+    verify_merge_parser = subcommands.add_parser(
+        "verify-merge",
+        help=(
+            "run Post-Merge Verification: the authoritative checks against "
+            "the exact merged commit in an isolated checkout, recorded as "
+            "Run Evidence; a failure stops further shipping and records a "
+            "Recovery Proposal for human review"
+        ),
+    )
+    verify_merge_parser.add_argument("run_id")
+    verify_merge_parser.add_argument("--verified-by", required=True)
+    verify_merge_parser.add_argument("--data-dir", type=Path)
+    resolve_merge_parser = subcommands.add_parser(
+        "resolve-merge",
+        help=(
+            "record a human-attributed resolution of a failed Post-Merge "
+            "Verification, lifting the shipping block; nothing is executed"
+        ),
+    )
+    resolve_merge_parser.add_argument("run_id")
+    resolve_merge_parser.add_argument("--resolved-by", required=True)
+    resolve_merge_parser.add_argument("--resolution", required=True)
+    resolve_merge_parser.add_argument("--data-dir", type=Path)
+    recovery_parser = subcommands.add_parser(
+        "recovery",
+        help=(
+            "list recorded Recovery Proposals and their resolution state "
+            "(records only; Agentflow never executes a recovery)"
+        ),
+    )
+    recovery_parser.add_argument("--data-dir", type=Path)
     rebase_parser = subcommands.add_parser("rebase")
     rebase_parser.add_argument("run_id")
     rebase_parser.add_argument("--data-dir", type=Path)
@@ -476,6 +512,55 @@ def main() -> int:
                     "strategy": result.strategy,
                     "target_branch": result.target_branch,
                 },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if args.command == "verify-merge":
+        verification = verify_merged_run(
+            run_id=args.run_id,
+            verified_by=args.verified_by,
+            data_dir=agentflow_home(args.data_dir),
+        )
+        response = {
+            "artifact": str(verification.artifact),
+            "merged_sha": verification.merged_sha,
+            "passed": verification.passed,
+            "run_id": verification.run_id,
+            "state": verification.state,
+            "verified_by": verification.verified_by,
+        }
+        if verification.recovery_proposal_id is not None:
+            response["recovery_proposal_id"] = verification.recovery_proposal_id
+        print(json.dumps(response, sort_keys=True))
+        return 0
+
+    if args.command == "resolve-merge":
+        resolved = resolve_post_merge_failure(
+            run_id=args.run_id,
+            resolved_by=args.resolved_by,
+            resolution=args.resolution,
+            data_dir=agentflow_home(args.data_dir),
+        )
+        print(
+            json.dumps(
+                {
+                    "recovery_proposal_id": resolved.recovery_proposal_id,
+                    "resolution": resolved.resolution,
+                    "resolved_by": resolved.resolved_by,
+                    "run_id": resolved.run_id,
+                    "state": resolved.state,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if args.command == "recovery":
+        print(
+            json.dumps(
+                list_recovery_proposals(data_dir=agentflow_home(args.data_dir)),
                 sort_keys=True,
             )
         )

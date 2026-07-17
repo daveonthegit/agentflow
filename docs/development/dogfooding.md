@@ -31,8 +31,8 @@ A first supervised Self-Hosted Run requires all of the following:
 - A fresh process can replay the Run and continue from the recorded state.
 
 Merge and deployment automation are not required for the first supervised
-Self-Hosted Run. They remain manual after approval until the Merge Agent and
-Post-Merge Verification exist.
+Self-Hosted Run. The Merge Agent and Post-Merge Verification now cover merging
+and its verification; deployment remains manual after approval.
 
 ## Procedure once the threshold is met
 

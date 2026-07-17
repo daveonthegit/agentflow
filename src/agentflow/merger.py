@@ -19,7 +19,9 @@ claim:
    merge;
 2. the Target Repository's committed merge policy
    (``merge_policy`` in ``.agentflow/repository-profile.json``) permits the
-   operation for the currently checked-out target branch.
+   operation for the currently checked-out target branch;
+3. shipping for the Target Repository is not stopped by an unresolved
+   Post-Merge Verification failure (see :mod:`agentflow.post_merge`).
 
 Every refusal is recorded as an immutable ``merge_refused`` event before the
 command fails, and a completed merge is recorded as a ``merge_completed`` event
@@ -34,6 +36,7 @@ import json
 from pathlib import Path
 import subprocess
 
+from .post_merge import unresolved_post_merge_failures
 from .repository_profile import MERGE_STRATEGIES, PROFILE_RELATIVE_PATH
 from .run_kernel import (
     acquire_claim,
@@ -223,6 +226,22 @@ def merge_approved_run(
             raise _refuse(
                 "Target Repository must be clean before merging",
                 approved_sha=status.approved_sha,
+                candidate_sha=candidate_sha,
+            )
+
+        # Gate 3: shipping stop. While any Run's Post-Merge Verification for
+        # this Target Repository has failed and is unresolved, every further
+        # merge is refused with evidence until a human records a resolution.
+        blocking = unresolved_post_merge_failures(
+            data_dir=data_dir, repository=repository
+        )
+        if blocking:
+            raise _refuse(
+                "shipping is blocked for this Target Repository: post-merge "
+                f"verification failed for run(s) {', '.join(blocking)} and "
+                "is unresolved",
+                approved_sha=status.approved_sha,
+                blocked_by_runs=blocking,
                 candidate_sha=candidate_sha,
             )
 
