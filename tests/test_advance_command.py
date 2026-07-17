@@ -119,6 +119,9 @@ def create_profiled_run(
     check: str = "python3 -c \"print('checks passed')\"",
     test_paths: list[str] | None = ("tests",),
     allow_merge: bool = False,
+    *,
+    protect_branch: bool = False,
+    repository_files: dict[str, str] | None = None,
 ) -> tuple[Path, Path, str]:
     repository = temp_path / "target"
     data_dir = temp_path / "agentflow-home"
@@ -135,7 +138,11 @@ def create_profiled_run(
         check=True,
     )
     (repository / "README.md").write_text("# Target\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=repository, check=True)
+    for relative_path, content in (repository_files or {}).items():
+        target = repository / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "add", "--all"], cwd=repository, check=True)
     subprocess.run(
         ["git", "commit", "-m", "Initial commit"],
         cwd=repository,
@@ -147,6 +154,8 @@ def create_profiled_run(
         profile_arguments.extend(["--test-path", test_path])
     if allow_merge:
         profile_arguments.append("--allow-merge")
+    if protect_branch:
+        profile_arguments.append("--merge-protected")
     profiled = agentflow(
         *profile_arguments,
         cwd=repository,
@@ -184,9 +193,18 @@ def create_built_run(
     check: str = "python3 -c \"print('checks passed')\"",
     test_paths: list[str] | None = ("tests",),
     allow_merge: bool = False,
+    *,
+    protect_branch: bool = False,
+    repository_files: dict[str, str] | None = None,
 ) -> tuple[Path, str]:
     _, data_dir, run_id = create_profiled_run(
-        temp_path, environment, check, test_paths, allow_merge
+        temp_path,
+        environment,
+        check,
+        test_paths,
+        allow_merge,
+        protect_branch=protect_branch,
+        repository_files=repository_files,
     )
     fixture_path = temp_path / "adapter-fixture.json"
     # The planner is retired: a Run advances from `ready` straight to `built` by
@@ -232,9 +250,18 @@ def create_verified_run(
     check: str = "python3 -c \"print('checks passed')\"",
     test_paths: list[str] | None = ("tests",),
     allow_merge: bool = False,
+    *,
+    protect_branch: bool = False,
+    repository_files: dict[str, str] | None = None,
 ) -> tuple[Path, str]:
     data_dir, run_id = create_built_run(
-        temp_path, environment, check, test_paths, allow_merge
+        temp_path,
+        environment,
+        check,
+        test_paths,
+        allow_merge,
+        protect_branch=protect_branch,
+        repository_files=repository_files,
     )
     verified = agentflow(
         "advance",
@@ -287,9 +314,18 @@ def create_tested_run(
     temp_path: Path,
     environment: dict[str, str],
     allow_merge: bool = False,
+    *,
+    check: str = "python3 -c \"print('checks passed')\"",
+    protect_branch: bool = False,
+    repository_files: dict[str, str] | None = None,
 ) -> tuple[Path, str]:
     data_dir, run_id = create_verified_run(
-        temp_path, environment, allow_merge=allow_merge
+        temp_path,
+        environment,
+        check=check,
+        allow_merge=allow_merge,
+        protect_branch=protect_branch,
+        repository_files=repository_files,
     )
     advance_tester(temp_path, data_dir, run_id, environment)
     return data_dir, run_id

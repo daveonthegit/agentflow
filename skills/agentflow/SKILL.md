@@ -122,10 +122,13 @@ Do not translate ordinary conversational agreement into approval.
 ## Merge an Approved Revision
 
 Merging requires an explicit repository policy: record it when profiling with
-`agentflow profile ... --allow-merge` (optionally `--merge-target-branch` and
-`--merge-strategy fast-forward|merge`; the target branch defaults to the
-branch checked out when the profile is created) and commit the profile. If the
-profile declares no `merge_policy`, every merge is refused.
+`agentflow profile ... --allow-merge` (optionally `--merge-target-branch`,
+`--merge-strategy fast-forward|merge`, and `--merge-protected`; the target
+branch defaults to the branch checked out when the profile is created) and
+commit the profile. If the profile declares no `merge_policy`, every merge is
+refused. `--merge-protected` marks the target branch as advancing only
+through the gated merge path: a merge is refused if the branch head has
+diverged out of band from the merge candidate's history.
 
 If and only if `agentflow status <run-id>` reports `human_approved` and the
 user explicitly directs the merge, run:
@@ -136,8 +139,13 @@ agentflow merge <run-id> --merged-by <human identity>
 
 The Merge Agent is deterministically gated engine code: it merges only when
 the Workspace still sits clean at the exact `approved_sha` (any drift makes
-the approval stale) and the Target Repository is clean on the policy's target
-branch. Every refusal is recorded as a `merge_refused` event; a completed
+the approval stale), the Target Repository is clean on the policy's target
+branch, a protected target branch has not diverged out of band, and the
+clean-environment CI gate passes — the candidate's committed Repository
+Profile checks are re-run against the exact `approved_sha` in a freshly
+created, isolated checkout (never the Run's Workspace), and every check must
+pass. Each CI execution records an indexed `merge-ci-<n>.json` evidence
+artifact. Every refusal is recorded as a `merge_refused` event; a completed
 merge records a `merge_completed` event plus write-once `merge.json`
 evidence. The merger can never create or modify approval records.
 

@@ -19,11 +19,21 @@ claim:
    merge;
 2. the Target Repository's committed merge policy
    (``merge_policy`` in ``.agentflow/repository-profile.json``) permits the
-   operation for the currently checked-out target branch.
+   operation for the currently checked-out target branch;
+3. when the policy marks the target branch ``protected``, the branch has not
+   diverged out of band: its current head must already be part of the merge
+   candidate's history, because a protected branch advances only through this
+   gated merge path;
+4. the clean-environment CI gate passes: the candidate's own committed
+   Repository Profile checks are re-run against the exact candidate SHA in a
+   freshly created, isolated checkout (never the Run's Workspace, which may
+   carry ignored local state), and every check must pass.
 
 Every refusal is recorded as an immutable ``merge_refused`` event before the
 command fails, and a completed merge is recorded as a ``merge_completed`` event
-plus a write-once ``merge.json`` evidence artifact.
+plus a write-once ``merge.json`` evidence artifact. Each CI gate execution is
+recorded as an indexed ``merge-ci-<n>.json`` evidence artifact whether it
+passes or fails.
 """
 
 from __future__ import annotations
@@ -32,7 +42,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import shlex
+import shutil
 import subprocess
+import tempfile
 
 from .repository_profile import MERGE_STRATEGIES, PROFILE_RELATIVE_PATH
 from .run_kernel import (
@@ -47,6 +60,10 @@ from .run_kernel import (
 # this set, so the merger role has no code path that grants approval.
 MERGE_EVENT_TYPES = frozenset({"merge_completed", "merge_refused"})
 
+# Ceiling for one required check in the clean-environment CI gate, matching
+# the authoritative-check timeout used by the workflow stages.
+CI_CHECK_TIMEOUT_SECONDS = 1800
+
 
 @dataclass(frozen=True)
 class MergeResult:
@@ -58,6 +75,7 @@ class MergeResult:
     target_branch: str
     strategy: str
     artifact: Path
+    ci_artifact: Path
 
 
 def _git(*args: str, cwd: Path) -> str:
@@ -137,7 +155,117 @@ def evaluate_merge_policy(
             f"unknown merge_policy strategy {strategy!r}; expected one of "
             + ", ".join(MERGE_STRATEGIES)
         )
+    if not isinstance(policy.get("protected", False), bool):
+        return "merge_policy protected must be a boolean"
     return None
+
+
+def evaluate_branch_protection(
+    policy: dict, *, repository: Path, candidate_sha: str
+) -> str | None:
+    """Return the protected-branch refusal reason, or None.
+
+    ``protected: true`` means the target branch advances only through this
+    gated merge path, so its current head must already be part of the merge
+    candidate's history. A head the candidate does not contain means the
+    branch moved out of band after the Run's base was captured, and the merge
+    must refuse rather than silently absorb or bypass that divergence.
+    """
+    if policy.get("protected", False) is not True:
+        return None
+    head_sha = _git("rev-parse", "HEAD", cwd=repository)
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", head_sha, candidate_sha],
+        cwd=repository,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        return (
+            f"target branch {policy.get('target_branch')!r} is protected and "
+            f"has diverged: its head {head_sha} is not in the merge "
+            f"candidate's history ({candidate_sha}); a protected branch "
+            "advances only through the gated merge path"
+        )
+    return None
+
+
+def run_clean_environment_checks(
+    *, workspace: Path, candidate_sha: str
+) -> tuple[list[dict], str | None]:
+    """Run the candidate's committed required checks in a clean environment.
+
+    The environment is a temporary detached ``git worktree`` created at
+    exactly ``candidate_sha`` and torn down afterward, so nothing local to
+    the Run's Workspace — ignored files, caches, uncommitted tooling — can
+    influence the result. The checks themselves come from the Repository
+    Profile committed inside the candidate, so the gate verifies exactly what
+    would be merged. Returns per-check evidence records and the refusal
+    reason, or ``None`` when every required check passed.
+    """
+    checkout = Path(tempfile.mkdtemp(prefix="agentflow-merge-ci-"))
+    try:
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(checkout), candidate_sha],
+            cwd=workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        profile_path = checkout / PROFILE_RELATIVE_PATH
+        if not profile_path.exists():
+            return [], (
+                "merge candidate commits no Repository Profile; required "
+                "checks cannot be verified in a clean environment"
+            )
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        commands = profile.get("checks")
+        if not isinstance(commands, list) or not commands:
+            return [], (
+                "merge candidate's Repository Profile declares no required "
+                "checks"
+            )
+        checks: list[dict] = []
+        failure: str | None = None
+        for command in commands:
+            started_at = datetime.now(timezone.utc)
+            completed = subprocess.run(
+                command,
+                cwd=checkout,
+                text=True,
+                capture_output=True,
+                timeout=CI_CHECK_TIMEOUT_SECONDS,
+                check=False,
+            )
+            checks.append(
+                {
+                    "command": command,
+                    "returncode": completed.returncode,
+                    "started_at": started_at.isoformat(),
+                    "stderr": completed.stderr,
+                    "stdout": completed.stdout,
+                }
+            )
+            if completed.returncode != 0 and failure is None:
+                summary = (
+                    completed.stderr.strip() or completed.stdout.strip()
+                )[-400:]
+                failure = (
+                    "required check failed in the clean-environment CI gate: "
+                    f"{shlex.join(command)} (exit {completed.returncode})"
+                    + (f": {summary}" if summary else "")
+                )
+        return checks, failure
+    finally:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(checkout)],
+            cwd=workspace,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        shutil.rmtree(checkout, ignore_errors=True)
 
 
 def merge_approved_run(
@@ -217,6 +345,19 @@ def merge_approved_run(
                 approved_sha=status.approved_sha,
                 candidate_sha=candidate_sha,
             )
+
+        # Gate 3: a protected target branch must not have diverged out of
+        # band; it advances only through this gated merge path.
+        assert policy is not None  # evaluate_merge_policy refused None above
+        protection_reason = evaluate_branch_protection(
+            policy, repository=repository, candidate_sha=candidate_sha
+        )
+        if protection_reason is not None:
+            raise _refuse(
+                protection_reason,
+                approved_sha=status.approved_sha,
+                candidate_sha=candidate_sha,
+            )
         if _git(
             "status", "--porcelain", "--untracked-files=all", cwd=repository
         ):
@@ -228,13 +369,47 @@ def merge_approved_run(
 
         # Merge evidence is write-once; a second merge of the same Run is
         # already refused by the state gate, and this guards damaged logs.
-        artifact = data_dir / "runs" / run_id / "merge.json"
+        run_dir = data_dir / "runs" / run_id
+        artifact = run_dir / "merge.json"
         if artifact.exists():
             raise _refuse("merge evidence already recorded for this run")
 
+        # Gate 4: clean-environment CI — the required checks must pass for
+        # the exact merge candidate in a freshly created, isolated checkout.
+        # Each execution's evidence is an indexed write-once artifact so a
+        # refused-then-retried merge never overwrites earlier CI evidence.
+        ci_checks, ci_failure = run_clean_environment_checks(
+            workspace=workspace, candidate_sha=status.approved_sha
+        )
+        ci_index = 1 + sum(1 for _ in run_dir.glob("merge-ci-*.json"))
+        ci_artifact = run_dir / f"merge-ci-{ci_index}.json"
+        ci_artifact.write_text(
+            json.dumps(
+                {
+                    "candidate_sha": status.approved_sha,
+                    "checks": ci_checks,
+                    "environment": "clean-checkout",
+                    "passed": ci_failure is None,
+                    "ran_at": datetime.now(timezone.utc).isoformat(),
+                    "run_id": run_id,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if ci_failure is not None:
+            raise _refuse(
+                ci_failure,
+                approved_sha=status.approved_sha,
+                candidate_sha=candidate_sha,
+                ci_artifact=str(ci_artifact),
+            )
+
         events = [
             json.loads(line)
-            for line in (data_dir / "runs" / run_id / "events.jsonl")
+            for line in (run_dir / "events.jsonl")
             .read_text(encoding="utf-8")
             .splitlines()
         ]
@@ -244,7 +419,6 @@ def merge_approved_run(
             if event["type"] == "human_approved"
         )
 
-        assert policy is not None  # evaluate_merge_policy refused None above
         strategy = policy.get("strategy", "fast-forward")
         if strategy == "fast-forward":
             merge_arguments = ["merge", "--ff-only", status.approved_sha]
@@ -285,11 +459,17 @@ def merge_approved_run(
                 "sequence": approval["sequence"],
             },
             "candidate_sha": status.approved_sha,
+            "ci": {
+                "artifact": str(ci_artifact),
+                "candidate_sha": status.approved_sha,
+                "passed": True,
+            },
             "merged_at": datetime.now(timezone.utc).isoformat(),
             "merged_by": merged_by,
             "merged_sha": merged_sha,
             "policy": {
                 "allow": True,
+                "protected": policy.get("protected", False),
                 "strategy": strategy,
                 "target_branch": current_branch,
             },
@@ -308,6 +488,7 @@ def merge_approved_run(
             approval_sequence=approval["sequence"],
             artifact=str(artifact),
             candidate_sha=status.approved_sha,
+            ci_artifact=str(ci_artifact),
             merged_by=merged_by,
             merged_sha=merged_sha,
             strategy=strategy,
@@ -322,6 +503,7 @@ def merge_approved_run(
             target_branch=current_branch,
             strategy=strategy,
             artifact=artifact,
+            ci_artifact=ci_artifact,
         )
     finally:
         release_claim(data_dir=data_dir, run_id=run_id, holder=holder)

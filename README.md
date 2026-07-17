@@ -172,8 +172,10 @@ The kernel owns run identity, immutable input snapshots, Repository Profile
 integrity, Git worktree isolation, schema validation, allowed paths,
 authoritative checks, append-only events, state replay, and approval bound to an
 exact candidate SHA, and a constrained Merge Agent that merges a current
-Approved Revision only after deterministic approval and repository-policy
-gates. Claude, Cursor, Codex, and deterministic fake adapters
+Approved Revision only after deterministic approval, repository-policy, and
+protected-branch gates plus a clean-environment CI gate that re-runs the
+candidate's committed checks at the exact merge SHA in a fresh isolated
+checkout. Claude, Cursor, Codex, and deterministic fake adapters
 support builder, tester, and reviewer roles; Claude and Cursor
-additionally provide live transcripts and model routing. The clean-environment
-CI gate, post-merge verification, and deployment are later slices.
+additionally provide live transcripts and model routing. Post-merge
+verification and deployment are later slices.
