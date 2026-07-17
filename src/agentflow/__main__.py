@@ -17,9 +17,10 @@ from .agent_adapter import (
     record_model_routing,
 )
 from .contracts import validate_task_spec
+from .merger import merge_approved_run
 from .project_setup import initialize_repository
 from .paths import agentflow_home
-from .repository_profile import create_repository_profile
+from .repository_profile import MERGE_STRATEGIES, create_repository_profile
 from .work_graph import (
     compute_ready_work,
     completed_work_item_ids,
@@ -75,6 +76,23 @@ def main() -> int:
         default=[],
         dest="test_paths",
     )
+    profile_parser.add_argument(
+        "--allow-merge",
+        action="store_true",
+        help=(
+            "record a merge_policy permitting the Merge Agent to merge an "
+            "Approved Revision into the target branch"
+        ),
+    )
+    profile_parser.add_argument(
+        "--merge-target-branch",
+        help="branch merge_policy targets (default: the current branch)",
+    )
+    profile_parser.add_argument(
+        "--merge-strategy",
+        choices=MERGE_STRATEGIES,
+        default="fast-forward",
+    )
     start_parser = subcommands.add_parser("start")
     start_parser.add_argument("summary", nargs="?")
     start_parser.add_argument(
@@ -121,6 +139,10 @@ def main() -> int:
     approve_parser.add_argument("run_id")
     approve_parser.add_argument("--approved-by", required=True)
     approve_parser.add_argument("--data-dir", type=Path)
+    merge_parser = subcommands.add_parser("merge")
+    merge_parser.add_argument("run_id")
+    merge_parser.add_argument("--merged-by", required=True)
+    merge_parser.add_argument("--data-dir", type=Path)
     rebase_parser = subcommands.add_parser("rebase")
     rebase_parser.add_argument("run_id")
     rebase_parser.add_argument("--data-dir", type=Path)
@@ -194,10 +216,21 @@ def main() -> int:
         return 0
 
     if args.command == "profile":
+        merge_policy = None
+        if args.allow_merge:
+            merge_policy = {
+                "allow": True,
+                "strategy": args.merge_strategy,
+            }
+            if args.merge_target_branch is not None:
+                merge_policy["target_branch"] = args.merge_target_branch
+        elif args.merge_target_branch is not None:
+            parser.error("--merge-target-branch requires --allow-merge")
         result = create_repository_profile(
             repository=Path.cwd(),
             checks=args.check,
             test_paths=args.test_paths,
+            merge_policy=merge_policy,
         )
         print(
             json.dumps(
@@ -372,6 +405,29 @@ def main() -> int:
                     "approved_sha": result.approved_sha,
                     "run_id": result.run_id,
                     "state": result.state,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if args.command == "merge":
+        result = merge_approved_run(
+            run_id=args.run_id,
+            merged_by=args.merged_by,
+            data_dir=agentflow_home(args.data_dir),
+        )
+        print(
+            json.dumps(
+                {
+                    "approved_sha": result.approved_sha,
+                    "artifact": str(result.artifact),
+                    "merged_by": result.merged_by,
+                    "merged_sha": result.merged_sha,
+                    "run_id": result.run_id,
+                    "state": result.state,
+                    "strategy": result.strategy,
+                    "target_branch": result.target_branch,
                 },
                 sort_keys=True,
             )

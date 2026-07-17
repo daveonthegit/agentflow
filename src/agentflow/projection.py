@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .run_kernel import STATE_BY_EVENT, short_run_id
+from .run_kernel import COMPLETED_RUN_STATES, STATE_BY_EVENT, short_run_id
 from .work_graph import compute_ready_work, load_work_graph
 
 
@@ -271,7 +271,7 @@ def build_projection(
     completed = {
         entry["work_item_id"]
         for entry in run_entries
-        if entry.get("state") == "human_approved" and entry.get("work_item_id")
+        if entry.get("state") in COMPLETED_RUN_STATES and entry.get("work_item_id")
     }
     graph = load_work_graph(repository)
     ready = compute_ready_work(graph, completed)

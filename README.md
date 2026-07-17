@@ -171,8 +171,9 @@ The append-only event history is stored at:
 The kernel owns run identity, immutable input snapshots, Repository Profile
 integrity, Git worktree isolation, schema validation, allowed paths,
 authoritative checks, append-only events, state replay, and approval bound to an
-exact candidate SHA. Claude, Cursor, Codex, and deterministic fake adapters
+exact candidate SHA, and a constrained Merge Agent that merges a current
+Approved Revision only after deterministic approval and repository-policy
+gates. Claude, Cursor, Codex, and deterministic fake adapters
 support builder, tester, and reviewer roles; Claude and Cursor
-additionally provide live transcripts and model routing. The bounded builder-fix
-retry loop from a failing tester test, merge, post-merge verification, and
-deployment are later slices.
+additionally provide live transcripts and model routing. The clean-environment
+CI gate, post-merge verification, and deployment are later slices.

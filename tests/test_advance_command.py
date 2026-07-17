@@ -118,6 +118,7 @@ def create_profiled_run(
     environment: dict[str, str],
     check: str = "python3 -c \"print('checks passed')\"",
     test_paths: list[str] | None = ("tests",),
+    allow_merge: bool = False,
 ) -> tuple[Path, Path, str]:
     repository = temp_path / "target"
     data_dir = temp_path / "agentflow-home"
@@ -144,6 +145,8 @@ def create_profiled_run(
     profile_arguments = ["profile", "--check", check]
     for test_path in test_paths or ():
         profile_arguments.extend(["--test-path", test_path])
+    if allow_merge:
+        profile_arguments.append("--allow-merge")
     profiled = agentflow(
         *profile_arguments,
         cwd=repository,
@@ -180,9 +183,10 @@ def create_built_run(
     environment: dict[str, str],
     check: str = "python3 -c \"print('checks passed')\"",
     test_paths: list[str] | None = ("tests",),
+    allow_merge: bool = False,
 ) -> tuple[Path, str]:
     _, data_dir, run_id = create_profiled_run(
-        temp_path, environment, check, test_paths
+        temp_path, environment, check, test_paths, allow_merge
     )
     fixture_path = temp_path / "adapter-fixture.json"
     # The planner is retired: a Run advances from `ready` straight to `built` by
@@ -227,8 +231,11 @@ def create_verified_run(
     environment: dict[str, str],
     check: str = "python3 -c \"print('checks passed')\"",
     test_paths: list[str] | None = ("tests",),
+    allow_merge: bool = False,
 ) -> tuple[Path, str]:
-    data_dir, run_id = create_built_run(temp_path, environment, check, test_paths)
+    data_dir, run_id = create_built_run(
+        temp_path, environment, check, test_paths, allow_merge
+    )
     verified = agentflow(
         "advance",
         run_id,
@@ -279,8 +286,11 @@ def advance_tester(
 def create_tested_run(
     temp_path: Path,
     environment: dict[str, str],
+    allow_merge: bool = False,
 ) -> tuple[Path, str]:
-    data_dir, run_id = create_verified_run(temp_path, environment)
+    data_dir, run_id = create_verified_run(
+        temp_path, environment, allow_merge=allow_merge
+    )
     advance_tester(temp_path, data_dir, run_id, environment)
     return data_dir, run_id
 

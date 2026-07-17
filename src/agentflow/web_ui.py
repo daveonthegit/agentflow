@@ -620,7 +620,7 @@ const LIVE_STATES = new Set([
 const DONE_BY_STATE = {
   created: 0, ready: 0, planned: 0, built: 1, verified: 2, tested: 3,
   reviewed: 4, changes_requested: 3, tests_failed: 2, awaiting_human: 4,
-  human_approved: 5, human_rejected: 4, unknown: 0,
+  human_approved: 5, human_rejected: 4, merged: 5, unknown: 0,
 };
 
 function runEvents(run) {
@@ -642,7 +642,7 @@ function pipeInfo(run) {
   const info = {
     done: 0, failedAt: null, warnAt: null,
     live: LIVE_STATES.has(s),
-    approved: s === "human_approved",
+    approved: s === "human_approved" || s === "merged",
     rejected: s === "human_rejected",
     gate: s === "awaiting_human",
   };
@@ -663,6 +663,7 @@ function badgeOf(state) {
   const map = {
     awaiting_human: ["Gate", "badge-gate"],
     human_approved: ["Approved", "badge-success"],
+    merged: ["Merged", "badge-success"],
     human_rejected: ["Rejected", "badge-danger"],
     failed: ["Failed", "badge-danger"],
     plan_rejected: ["Plan rejected", "badge-danger"],
@@ -704,7 +705,7 @@ function fullEventDetail(ev) {
   return parts.join("  ");
 }
 function eventClass(type) {
-  if (["checks_passed", "tests_ready", "review_ready", "human_approved"].includes(type)) return "t-success";
+  if (["checks_passed", "tests_ready", "review_ready", "human_approved", "merge_completed"].includes(type)) return "t-success";
   if (["checks_failed", "tests_failed", "review_blocked", "repair_exhausted",
        "human_rejected", "plan_rejected", "run_abandoned"].includes(type)) return "t-danger";
   if (type === "awaiting_human") return "t-accent";
@@ -960,7 +961,7 @@ function renderEvidenceRail(run) {
 
   const item = workItemFor(run);
   if (item && (item.acceptance_criteria || []).length) {
-    const done = run.state === "human_approved";
+    const done = run.state === "human_approved" || run.state === "merged";
     const block = el("div", "blk");
     block.appendChild(el("h3", null, "Acceptance criteria"));
     const list = el("div", "acc");
@@ -1047,7 +1048,8 @@ function renderWork() {
     if (!id) continue;
     const prev = runByItem[id];
     if (!prev || LIVE_STATES.has(run.state)
-        || (!LIVE_STATES.has(prev.state) && run.state === "human_approved")) {
+        || (!LIVE_STATES.has(prev.state)
+            && (run.state === "human_approved" || run.state === "merged"))) {
       runByItem[id] = run;
     }
   }
