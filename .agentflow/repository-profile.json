@@ -117,7 +117,7 @@
     "target_branch": "main"
   },
   "schema_version": 1,
-  "source_fingerprint": "d76b48de499c1c37c29ae41d0ca351132b84cfe405ec3e18792697193a43ed04",
+  "source_fingerprint": "5e135a0e4ddf7e8e94584585377e60a886e94410c5477a91b59063fe14d8f981",
   "test_paths": [
     "tests"
   ]
