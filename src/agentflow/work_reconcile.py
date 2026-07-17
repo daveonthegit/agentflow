@@ -81,9 +81,11 @@ class ReconcileApplyResult:
     dispositions were left unconfirmed and so untouched. ``external_completions``
     are the evidence records appended for ``completed_externally`` items.
     ``removed_claims`` are completion-claim files consumed because every item
-    they reference was dispositioned; ``pending_claims`` are the claims kept in
-    place because at least one referenced item was not, preserving their pending
-    signal. ``graph`` is the single validated Work Graph after the pass.
+    they reference is settled (dispositioned this pass, or absent from the live
+    graph and so never dispositionable); ``pending_claims`` are the claims kept
+    in place because at least one referenced graph item is still pending,
+    preserving their signal. ``graph`` is the single validated Work Graph after
+    the pass.
     """
 
     applied: list[dict]
@@ -263,9 +265,11 @@ def apply_reconcile(
       ones;
     * ``invalidated`` marks the item ``proposed`` so it re-enters Framing.
 
-    Completion-claim files are consumed only when every item they reference was
-    dispositioned this pass; a multi-item claim with any undispositioned item is
-    left in place so its pending signal survives. Unconfirmed dispositions are
+    Completion-claim files are consumed only when every item they reference is
+    settled -- dispositioned this pass, or absent from the live graph (an id that
+    can never be dispositioned) -- so a multi-item claim with any still-pending
+    graph item is left in place and its pending signal survives. Unconfirmed
+    dispositions are
     reported and left for a later confirmation pass. ``confirmed_by`` attributes
     the pass and is required.
     """
@@ -355,13 +359,27 @@ def apply_reconcile(
         )
 
     dispositioned_ids = set(confirmed_by_id)
+    # A referenced id counts as *settled* when it was dispositioned this pass or
+    # when it no longer exists in the live graph. An id absent from the graph
+    # (already-closed, or never a real item) can never be dispositioned -- apply
+    # refuses any disposition for an unknown Work Item -- so counting it as
+    # pending would strand the claim forever, defeating single-pass reconcile.
+    live_ids = set(by_id)
+
+    def _pending(related: list[str]) -> list[str]:
+        return sorted(
+            item_id
+            for item_id in set(related)
+            if item_id in live_ids and item_id not in dispositioned_ids
+        )
+
     removed_claims: list[str] = []
     pending_claims: list[dict] = []
     for proposal in scan_proposals(repository).valid:
         if proposal.kind != PROPOSAL_KIND_COMPLETION_CLAIM:
             continue
         related = proposal.relates_to
-        if related and all(item_id in dispositioned_ids for item_id in related):
+        if related and not _pending(related):
             proposal.path.unlink()
             removed_claims.append(proposal.filename)
         else:
@@ -369,7 +387,7 @@ def apply_reconcile(
                 {
                     "filename": proposal.filename,
                     "relates_to": related,
-                    "pending": sorted(set(related) - dispositioned_ids),
+                    "pending": _pending(related),
                 }
             )
     return ReconcileApplyResult(
