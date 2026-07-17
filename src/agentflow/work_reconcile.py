@@ -275,18 +275,23 @@ def apply_reconcile(
     if now is None:
         now = datetime.now(timezone.utc)
     validated = [validate_reconcile_disposition(entry) for entry in dispositions]
+
+    # Reject any Work Item named by more than one disposition in the pass --
+    # even a confirmed/unconfirmed pair. Such a plan is ambiguous about the
+    # human's decision and would otherwise report the item as *both* applied and
+    # skipped_unconfirmed, an incoherent single-pass outcome.
+    all_ids = [entry["work_item_id"] for entry in validated]
+    duplicates = sorted({item_id for item_id in all_ids if all_ids.count(item_id) > 1})
+    if duplicates:
+        raise ContractError(
+            "reconcile apply has duplicate dispositions for the same Work Item: "
+            f"{duplicates}"
+        )
+
     confirmed = [entry for entry in validated if entry["confirmed"]]
     skipped_unconfirmed = sorted(
         entry["work_item_id"] for entry in validated if not entry["confirmed"]
     )
-
-    ids = [entry["work_item_id"] for entry in confirmed]
-    duplicates = sorted({item_id for item_id in ids if ids.count(item_id) > 1})
-    if duplicates:
-        raise ContractError(
-            "reconcile apply has duplicate confirmed dispositions for: "
-            f"{duplicates}"
-        )
 
     graph = load_work_graph(repository, backend=backend)
     by_id = {item["id"]: item for item in graph}
