@@ -136,6 +136,43 @@ class GitHookTests(unittest.TestCase):
             )
             self.assertEqual(with_trailer.returncode, 0, with_trailer.stderr)
 
+    def test_hooks_are_never_written_outside_the_target_repository(self) -> None:
+        """A shared ``core.hooksPath`` must not turn init into a cross-repo write.
+
+        Many developers point ``core.hooksPath`` at a directory shared across
+        several repositories (a common setup for org-wide hook management).
+        ``agentflow init`` only has authorization to configure the repository
+        it was asked to initialize; installing hook files into a location that
+        lives outside that repository would silently rewrite hooks other,
+        unrelated repositories rely on. Confinement to the target repository is
+        required regardless of git hook configuration.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            shared_hooks = base / "shared-hooks-outside-repo"
+            shared_hooks.mkdir(parents=True, exist_ok=True)
+            repository = base / "repo"
+            _init_git_repo(repository)
+            _git(
+                repository,
+                "config",
+                "core.hooksPath",
+                str(shared_hooks),
+            )
+
+            result = _run_init(repository)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            for name in ("pre-commit", "commit-msg"):
+                written = shared_hooks / name
+                self.assertFalse(
+                    written.exists(),
+                    f"agentflow init wrote '{written}', which lies outside the "
+                    "target repository (it is only authorized to configure "
+                    f"'{repository}'). A shared core.hooksPath must not let "
+                    "init rewrite hooks belonging to other repositories.",
+                )
+
     def test_foreign_hook_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = Path(temp_dir) / "repo"
