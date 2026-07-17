@@ -302,6 +302,38 @@ class RegenerationTests(unittest.TestCase):
             self.assertIn("Add a readiness probe", text)
             self.assertIn("## Proposed Work Items", text)
 
+            # Re-running the same graph-mutating command through the real CLI
+            # dispatch path (not just the direct save_work_graph function
+            # call) must be idempotent: the already-ingested proposal dedups
+            # against the existing item, so the regenerated mirror is
+            # byte-identical and produces no diff.
+            subprocess.run(["git", "add", "-A"], cwd=repository, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "ingest"],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+            )
+
+            result_again = run_agentflow(
+                "work", "ingest", "--repository", str(repository), cwd=repository
+            )
+            self.assertEqual(result_again.returncode, 0, result_again.stderr)
+
+            status = subprocess.run(
+                ["git", "status", "--porcelain", WORK_MD_FILENAME],
+                cwd=repository,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertEqual(
+                status.stdout,
+                "",
+                "re-running the same graph-mutating command must not diff "
+                "the mirror",
+            )
+
     def test_in_memory_backend_writes_no_mirror(self) -> None:
         # An in-memory backend has no repository, so save must not write a
         # mirror anywhere — the isolation that keeps this repo untouched in tests.
