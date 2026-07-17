@@ -58,9 +58,31 @@ _PROTOCOL = (
 )
 
 
+def _escape_markdown(text: str) -> str:
+    """Neutralize leading Markdown heading syntax in free-form Work Item text.
+
+    A Work Item's ``summary`` and acceptance criteria are free-form and are not
+    trusted as layout: a value beginning a line with ``#`` must not be able to
+    open a section heading and spoof the open/proposed structure the board
+    exists to make legible. Escaping every leading ``#`` on a line renders the
+    text verbatim (Markdown shows the literal ``#``) while breaking the raw
+    heading substring anything scanning ``WORK.md`` by heading text keys on.
+    """
+    escaped_lines = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        indent = line[: len(line) - len(stripped)]
+        hashes = len(stripped) - len(stripped.lstrip("#"))
+        if hashes:
+            escaped_lines.append(indent + "\\#" * hashes + stripped[hashes:])
+        else:
+            escaped_lines.append(line)
+    return "\n".join(escaped_lines)
+
+
 def _render_item(item: dict) -> str:
     """Render one Work Item as a Markdown section, deterministically."""
-    lines = [f"### {item['id']}", "", item["summary"], ""]
+    lines = [f"### {item['id']}", "", _escape_markdown(item["summary"]), ""]
     depends_on = item.get("depends_on") or []
     if depends_on:
         lines.append("Depends on: " + ", ".join(depends_on))
@@ -73,7 +95,7 @@ def _render_item(item: dict) -> str:
     lines.append("")
     if criteria:
         lines.append("Acceptance criteria:")
-        lines.extend(f"- {criterion}" for criterion in criteria)
+        lines.extend(f"- {_escape_markdown(criterion)}" for criterion in criteria)
     else:
         lines.append("Acceptance criteria: _none recorded._")
     return "\n".join(lines)
