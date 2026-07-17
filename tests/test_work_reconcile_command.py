@@ -419,6 +419,26 @@ class ApplyReconcileTests(_RepoCase):
         )
         self.assertEqual(result.removed_claims, ["both.json"])
 
+    def test_confirmed_and_unconfirmed_duplicate_for_one_item_is_rejected(self) -> None:
+        # A plan naming the same work item twice -- once confirmed, once not --
+        # is ambiguous about the human's decision. Applying it must not silently
+        # report the item as *both* applied and skipped_unconfirmed: one
+        # confirmation pass must yield a single, unambiguous outcome per item.
+        repo, _ = self._drifted()
+        with self.assertRaises(ContractError):
+            apply_reconcile(
+                repo.path,
+                [
+                    _disposition("open-item", DISPOSITION_STILL_VALID, confirmed=True),
+                    _disposition(
+                        "open-item", DISPOSITION_INVALIDATED, confirmed=False
+                    ),
+                ],
+                confirmed_by="dave",
+            )
+        # Nothing was mutated by the rejected pass.
+        self.assertIsNone(load_work_graph(repo.path)[0].get("status"))
+
     def test_apply_requires_confirmed_by(self) -> None:
         repo, _ = self._drifted()
         with self.assertRaises(ContractError):
