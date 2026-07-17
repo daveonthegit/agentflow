@@ -1,0 +1,36 @@
+{
+  "name": "One Run failing the same check three times is not recurrence",
+  "comment": "Historical failure: a naive detector counted repetitions inside a single Run as recurrence. Recurrence is across distinct Runs only.",
+  "kind": "recurring_check_failure",
+  "min_runs": 3,
+  "runs": [
+    {
+      "run_id": "fixture-run-1",
+      "events": [
+        {"sequence": 1, "type": "run_created"},
+        {"sequence": 2, "type": "build_ready"},
+        {"artifact": "checks-1.json", "sequence": 3, "type": "checks_failed"},
+        {"artifact": "checks-2.json", "sequence": 4, "type": "checks_failed"},
+        {"artifact": "checks-3.json", "sequence": 5, "type": "checks_failed"}
+      ],
+      "artifacts": {
+        "checks-1.json": {
+          "checks": [
+            {"command": "python3 -m pytest tests/ -x -q", "returncode": 1}
+          ]
+        },
+        "checks-2.json": {
+          "checks": [
+            {"command": "python3 -m pytest tests/ -x -q", "returncode": 1}
+          ]
+        },
+        "checks-3.json": {
+          "checks": [
+            {"command": "python3 -m pytest tests/ -x -q", "returncode": 1}
+          ]
+        }
+      }
+    }
+  ],
+  "expected_subjects": []
+}

@@ -1,0 +1,22 @@
+{
+  "name": "Many repairs inside one Run are not a recurring repair loop",
+  "comment": "Historical failure: counting repair_ready events instead of distinct Runs turned every exhausted repair budget into a proposal.",
+  "kind": "recurring_repair_loop",
+  "min_runs": 3,
+  "runs": [
+    {
+      "run_id": "fixture-run-1",
+      "events": [
+        {"sequence": 1, "type": "run_created"},
+        {"sequence": 2, "type": "build_ready"},
+        {"sequence": 3, "type": "review_blocked"},
+        {"repair_attempt": 1, "sequence": 4, "type": "repair_ready"},
+        {"sequence": 5, "type": "review_blocked"},
+        {"repair_attempt": 2, "sequence": 6, "type": "repair_ready"},
+        {"sequence": 7, "type": "review_blocked"},
+        {"repair_attempt": 3, "sequence": 8, "type": "repair_ready"}
+      ]
+    }
+  ],
+  "expected_subjects": []
+}
