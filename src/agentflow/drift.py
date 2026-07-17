@@ -187,20 +187,30 @@ def _commit_records(
     With no boundary the whole history reachable from ``HEAD`` is walked.
     Commits are returned oldest-first so the report reads in landing order.
 
-    Merge commits are excluded (``--no-merges``): a ``git merge --no-ff`` — the
-    "merge" strategy Agentflow's own merger uses to land a gated run — produces
-    a commit that carries no ``Work-Item`` trailer and whose ``git show`` reports
-    no changed paths, while every real commit it folds in already carries its own
-    attribution. Walking merge commits would flag that plumbing as ``untracked``
-    drift even though the underlying work is fully tracked.
+    Empty-diff merge commits are excluded, but conflict-resolution merges are
+    not. A ``git merge --no-ff`` — the "merge" strategy Agentflow's own merger
+    uses to land a gated run — produces a commit that carries no ``Work-Item``
+    trailer and whose combined diff (``git show --name-only``) is empty, while
+    every real commit it folds in already carries its own attribution; walking
+    it would flag pure plumbing as ``untracked`` drift. A *manual*
+    conflict-resolution merge is also a merge commit, but its content diverges
+    from both parents, so its combined diff is non-empty: that is real,
+    possibly unattributed work, and must be analyzed. So a merge commit is
+    skipped only when its combined diff is empty; non-merge commits are always
+    analyzed.
     """
     range_spec = f"{boundary}..HEAD" if boundary else "HEAD"
     try:
-        out = _git(repository, "rev-list", "--no-merges", "--reverse", range_spec)
+        out = _git(repository, "rev-list", "--reverse", range_spec)
     except subprocess.CalledProcessError:
         return []
     records: list[CommitRecord] = []
     for sha in (line.strip() for line in out.splitlines() if line.strip()):
+        changed = tuple(changed_paths_for_commit(repository, sha))
+        parents = _git(repository, "show", "-s", "--format=%P", sha).split()
+        if len(parents) > 1 and not changed:
+            # Pure plumbing merge: nothing diverges from either parent.
+            continue
         subject = _git(repository, "show", "-s", "--format=%s", sha).strip()
         trailers_raw = _git(
             repository,
@@ -214,7 +224,6 @@ def _commit_records(
             for value in trailers_raw.splitlines()
             if value.strip()
         )
-        changed = tuple(changed_paths_for_commit(repository, sha))
         records.append(CommitRecord(sha, subject, trailers, changed))
     return records
 
