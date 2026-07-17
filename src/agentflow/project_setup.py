@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 
@@ -73,16 +73,28 @@ class PolicyNotCommittableError(RuntimeError):
     change rather than trying to defeat the ignore configuration.
     """
 
-    def __init__(self, policy_relative: str, ignore_rule: str) -> None:
+    def __init__(
+        self,
+        policy_relative: str,
+        ignore_rule: str,
+        fix_file: str,
+        fix_lines: tuple[str, ...],
+    ) -> None:
         self.policy_relative = policy_relative
         self.ignore_rule = ignore_rule
+        self.fix_file = fix_file
+        self.fix_lines = fix_lines
+        rendered_fix = "".join(f"    {line}\n" for line in fix_lines)
         super().__init__(
             "agentflow init cannot proceed: the committed enforcement policy "
             f"'{policy_relative}' is ignored by git and could not be committed.\n"
             f"Matching ignore rule: {ignore_rule}\n"
             "The enforcement mode is committed repository policy, so this path "
-            "must be committable. Remove or negate that rule (for example add "
-            f"'!/{policy_relative}' after it) and re-run `agentflow init`."
+            "must be committable. A file inside an ignored directory cannot be "
+            "re-included by negating the file alone, so append these lines to "
+            f"'{fix_file}':\n"
+            f"{rendered_fix}"
+            "then re-run `agentflow init`."
         )
 
 
@@ -109,7 +121,10 @@ def initialize_repository(
     if in_git:
         ignore_rule = _policy_ignore_rule(repository)
         if ignore_rule is not None:
-            raise PolicyNotCommittableError(POLICY_RELATIVE, ignore_rule)
+            fix_file, fix_lines = _suggested_reinclusion(ignore_rule)
+            raise PolicyNotCommittableError(
+                POLICY_RELATIVE, ignore_rule, fix_file, fix_lines
+            )
 
     _install_skill(repository)
     _write_instructions(repository)
@@ -250,6 +265,45 @@ def _policy_ignore_rule(repository: Path) -> str | None:
     )
     rule = verbose.stdout.strip()
     return rule or POLICY_RELATIVE
+
+
+def _suggested_reinclusion(ignore_rule: str) -> tuple[str, tuple[str, ...]]:
+    """Return the file to edit and the negation lines that re-include the policy.
+
+    ``git check-ignore -v`` reports ``<source>:<line>:<pattern>\\t<pathname>``.
+    Negation lives in ``<source>`` and is interpreted relative to that file's
+    directory (except ``.git/info/exclude`` and the global excludes file, which
+    are repo-root relative). Because git never descends into an excluded
+    directory, re-including the policy file alone is not enough when a *parent*
+    directory is excluded (the directory-ignore form): each ancestor directory
+    between the source and the policy must be re-included first, then the file.
+    Emitting the ancestor re-includes unconditionally is correct for every form
+    — the extra lines are harmless no-ops when only the file (glob form) matches.
+    """
+    before_path = ignore_rule.split("\t", 1)[0]
+    source = before_path.split(":", 2)[0] if ":" in before_path else ".gitignore"
+
+    if PurePosixPath(source).name == ".gitignore":
+        source_dir = str(PurePosixPath(source).parent)
+    else:
+        # info/exclude and core.excludesFile patterns are repo-root relative.
+        source_dir = "."
+
+    policy = PurePosixPath(POLICY_RELATIVE)
+    if source_dir in ("", "."):
+        relative = policy
+    else:
+        relative = policy.relative_to(source_dir)
+
+    lines: list[str] = []
+    ancestor = PurePosixPath("")
+    for part in relative.parts[:-1]:
+        ancestor = ancestor / part
+        lines.append(f"!{ancestor.as_posix()}/")
+    lines.append(f"!{relative.as_posix()}")
+
+    fix_file = source if source else ".gitignore"
+    return fix_file, tuple(lines)
 
 
 def _hooks_dir(repository: Path) -> Path:
