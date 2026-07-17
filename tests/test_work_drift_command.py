@@ -182,6 +182,33 @@ class _Repo:
             text=True,
         ).stdout.strip()
 
+    def checkout_new_branch(self, name: str) -> None:
+        self._run("git", "checkout", "-q", "-b", name)
+
+    def checkout(self, name: str) -> None:
+        self._run("git", "checkout", "-q", name)
+
+    def current_branch(self) -> str:
+        return subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=self.path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def merge_no_ff(self, branch: str, message: str) -> str:
+        # Mirrors the merger's own "merge" strategy (git merge --no-ff),
+        # which is exactly what this repository's own merge_policy uses.
+        self._run("git", "merge", "--no-ff", branch, "-m", message)
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
     def record_approval(self) -> str:
         # A minimal approval mirror line; drift keys off the commit that lands
         # it, never its content, so an exact hash is unnecessary here.
@@ -279,6 +306,36 @@ class DetectWorkDriftTests(unittest.TestCase):
         report = detect_work_drift(repo.path)
         self.assertIsNone(report.approval_boundary)
         self.assertEqual(len(report.analyzed_commits), 1)
+
+    def test_no_ff_merge_folding_in_attributed_work_is_not_untracked(self) -> None:
+        # This repository's own merge_policy strategy is "merge", which the
+        # merger implements as `git merge --no-ff -m "Agentflow run <id>
+        # merge" <sha>` (see merger.py) — a commit that never carries a
+        # Work-Item trailer and, via plain `git show`, never reports changed
+        # paths either (a git quirk: `git show --name-only` on a merge
+        # commit is empty unless -m/-c is passed). Every commit actually
+        # landed on the topic branch already carries its own Work-Item
+        # trailer. The merge commit itself is just plumbing for a gated,
+        # fully-attributed run and must not be reported as drift.
+        repo = self._repo()
+        repo.write_graph([_item("a")])
+        repo.write("README.md", "# repo\n")
+        repo.commit("init")
+        repo.record_approval()
+        base_branch = repo.current_branch()
+
+        repo.checkout_new_branch("feature")
+        repo.write("work.py", "x = 1\n")
+        repo.commit("do the work\n\nWork-Item: a")
+        repo.checkout(base_branch)
+        repo.merge_no_ff("feature", "Agentflow run xyz merge")
+
+        report = detect_work_drift(repo.path)
+        self.assertEqual(
+            report.findings,
+            (),
+            f"merge commit produced spurious drift findings: {report.findings}",
+        )
 
 
 class DriftCliTests(unittest.TestCase):
