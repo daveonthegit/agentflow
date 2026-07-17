@@ -403,6 +403,32 @@ class ApplyReconcileTests(_RepoCase):
             (repo.path / ".agentflow" / "proposals" / "both.json").is_file()
         )
 
+    def test_claim_naming_a_nonexistent_item_is_not_stuck_pending_forever(self) -> None:
+        # A claim can name an id that no longer exists in the graph (already
+        # closed by an earlier pass, or simply never a real item). Such an id
+        # can never be dispositioned -- apply_reconcile refuses any disposition
+        # for an unknown Work Item -- so it must not count against the claim's
+        # pending signal. Otherwise a claim referencing one live item and one
+        # dead id could never be resolved through reconcile: dispositioning the
+        # live item would leave the claim permanently "pending" on an id no
+        # human can ever confirm, defeating "one confirmation pass yields a
+        # single updated graph ready for one re-approval."
+        repo = self._repo()
+        repo.write_graph([_item("alpha")])
+        repo.commit("init")
+        repo.write_claim("both.json", "alpha done; ghost already closed", ["ghost-item", "alpha"])
+
+        result = apply_reconcile(
+            repo.path,
+            [_disposition("alpha", DISPOSITION_STILL_VALID)],
+            confirmed_by="dave",
+        )
+        self.assertEqual(result.removed_claims, ["both.json"])
+        self.assertEqual(result.pending_claims, [])
+        self.assertFalse(
+            (repo.path / ".agentflow" / "proposals" / "both.json").exists()
+        )
+
     def test_multi_item_claim_consumed_when_all_dispositioned(self) -> None:
         repo = self._repo()
         repo.write_graph([_item("alpha"), _item("beta")])
