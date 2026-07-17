@@ -1,0 +1,36 @@
+{
+  "name": "A check failing in fewer Runs than the threshold is not recurring",
+  "kind": "recurring_check_failure",
+  "min_runs": 3,
+  "runs": [
+    {
+      "run_id": "fixture-run-1",
+      "events": [
+        {"sequence": 1, "type": "run_created"},
+        {"artifact": "checks-1.json", "sequence": 2, "type": "checks_failed"}
+      ],
+      "artifacts": {
+        "checks-1.json": {
+          "checks": [
+            {"command": "npm run lint", "returncode": 1}
+          ]
+        }
+      }
+    },
+    {
+      "run_id": "fixture-run-2",
+      "events": [
+        {"sequence": 1, "type": "run_created"},
+        {"artifact": "checks-1.json", "sequence": 2, "type": "checks_failed"}
+      ],
+      "artifacts": {
+        "checks-1.json": {
+          "checks": [
+            {"command": "npm run lint", "returncode": 1}
+          ]
+        }
+      }
+    }
+  ],
+  "expected_subjects": []
+}

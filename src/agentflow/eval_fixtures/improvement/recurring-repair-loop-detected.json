@@ -1,0 +1,35 @@
+{
+  "name": "Repair loops fired by the same trigger across three Runs are recurring",
+  "kind": "recurring_repair_loop",
+  "min_runs": 3,
+  "runs": [
+    {
+      "run_id": "fixture-run-1",
+      "events": [
+        {"sequence": 1, "type": "run_created"},
+        {"sequence": 2, "type": "build_ready"},
+        {"sequence": 3, "type": "tests_failed"},
+        {"repair_attempt": 1, "sequence": 4, "type": "repair_ready"}
+      ]
+    },
+    {
+      "run_id": "fixture-run-2",
+      "events": [
+        {"sequence": 1, "type": "run_created"},
+        {"sequence": 2, "type": "build_ready"},
+        {"sequence": 3, "type": "tests_failed"},
+        {"repair_attempt": 1, "sequence": 4, "type": "repair_ready"}
+      ]
+    },
+    {
+      "run_id": "fixture-run-3",
+      "events": [
+        {"sequence": 1, "type": "run_created"},
+        {"sequence": 2, "type": "build_ready"},
+        {"sequence": 3, "type": "tests_failed"},
+        {"repair_attempt": 1, "sequence": 4, "type": "repair_ready"}
+      ]
+    }
+  ],
+  "expected_subjects": ["tests_failed"]
+}

@@ -42,5 +42,5 @@ that ships it; git history is the completion record. The dependency edges in the
 graph encode the ordering that used to be prose here — for example merge and
 shipping work (`merge-agent`, `ci-gate`, `post-merge-verification`,
 `deployment-adapters`) is gated behind the Merge Agent, and evidence-driven
-improvement (`improvement-proposals`, `adoption-gate`) behind the observability
+improvement (`adoption-gate`) behind the observability
 projection. This document keeps only the narrative; the status is the graph.

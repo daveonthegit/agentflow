@@ -17,6 +17,12 @@ from .agent_adapter import (
     record_model_routing,
 )
 from .contracts import validate_task_spec
+from .improvement import (
+    MIN_RECURRENCE_RUNS,
+    evaluate_proposal,
+    generate_proposals,
+    list_proposals,
+)
 from .project_setup import initialize_repository
 from .paths import agentflow_home
 from .repository_profile import create_repository_profile
@@ -178,6 +184,39 @@ def main() -> int:
     )
     project_parser.add_argument("--repository", type=Path, default=Path("."))
     project_parser.add_argument("--data-dir", type=Path)
+    propose_parser = subcommands.add_parser(
+        "propose",
+        help=(
+            "detect recurring patterns in stored Run Evidence and record "
+            "Improvement Proposals (records only; nothing is applied)"
+        ),
+    )
+    propose_parser.add_argument(
+        "--min-runs",
+        type=int,
+        default=MIN_RECURRENCE_RUNS,
+        help="distinct Runs a pattern must recur across before it is proposed",
+    )
+    propose_parser.add_argument("--data-dir", type=Path)
+    proposals_parser = subcommands.add_parser(
+        "proposals",
+        help="list recorded Improvement Proposals and their evaluation state",
+    )
+    proposals_parser.add_argument("--data-dir", type=Path)
+    evaluate_parser = subcommands.add_parser(
+        "evaluate",
+        help=(
+            "evaluate an Improvement Proposal against the fixed fixtures and "
+            "historical Run Evidence, recording the result as evidence"
+        ),
+    )
+    evaluate_parser.add_argument("proposal_id")
+    evaluate_parser.add_argument(
+        "--fixtures",
+        type=Path,
+        help="fixture directory override (defaults to the shipped fixed fixtures)",
+    )
+    evaluate_parser.add_argument("--data-dir", type=Path)
     serve_parser = subcommands.add_parser(
         "serve",
         help=(
@@ -498,6 +537,32 @@ def main() -> int:
             repository=args.repository,
         )
         print(json.dumps(projection, sort_keys=True))
+        return 0
+
+    if args.command == "propose":
+        proposals = generate_proposals(
+            data_dir=agentflow_home(args.data_dir),
+            min_runs=args.min_runs,
+        )
+        print(json.dumps(proposals, sort_keys=True))
+        return 0
+
+    if args.command == "proposals":
+        print(
+            json.dumps(
+                list_proposals(data_dir=agentflow_home(args.data_dir)),
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if args.command == "evaluate":
+        evaluation = evaluate_proposal(
+            data_dir=agentflow_home(args.data_dir),
+            proposal_id=args.proposal_id,
+            fixtures_dir=args.fixtures,
+        )
+        print(json.dumps(evaluation, sort_keys=True))
         return 0
 
     if args.command == "serve":
