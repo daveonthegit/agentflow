@@ -75,6 +75,52 @@ class ProfileCommandTests(unittest.TestCase):
             self.assertEqual(profile["map"]["documentation"], ["README.md"])
             self.assertEqual(len(profile["source_fingerprint"]), hashlib.sha256().digest_size * 2)
 
+    def test_profile_skips_tracked_files_deleted_from_the_working_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir)
+            subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.email", "agentflow@example.test"],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Agentflow Test"],
+                cwd=repository,
+                check=True,
+            )
+            (repository / "kept.md").write_text("kept\n", encoding="utf-8")
+            (repository / "moved.png").write_text("binary\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repository, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "Initial commit"],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+            )
+            # A tracked file deleted from disk but still in the index must not
+            # break profiling; the fingerprint describes the working tree.
+            (repository / "moved.png").unlink()
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "agentflow",
+                    "profile",
+                    "--check",
+                    "true",
+                ],
+                cwd=repository,
+                env={**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["state"], "profile_ready")
+
     def test_profile_records_sorted_test_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = Path(temp_dir)

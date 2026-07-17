@@ -50,7 +50,13 @@ def _repository_files(repository: Path) -> list[Path]:
         check=True,
     )
     paths = [Path(value.decode("utf-8")) for value in result.stdout.split(b"\0") if value]
-    return sorted(path for path in paths if path != PROFILE_RELATIVE_PATH)
+    # The fingerprint describes the working tree as profiled: a tracked file
+    # deleted from disk (but still in the index) is not part of that source.
+    return sorted(
+        path
+        for path in paths
+        if path != PROFILE_RELATIVE_PATH and (repository / path).is_file()
+    )
 
 
 def _source_fingerprint(repository: Path, files: list[Path]) -> str:
