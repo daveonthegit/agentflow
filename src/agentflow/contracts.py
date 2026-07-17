@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import PurePosixPath
 import re
 from typing import Any
 
@@ -99,8 +100,40 @@ def validate_task_spec(value: Any) -> dict[str, Any]:
     return task
 
 
-_WORK_ITEM_FIELDS = ("id", "summary", "acceptance_criteria", "depends_on", "status")
+_WORK_ITEM_FIELDS = (
+    "id",
+    "summary",
+    "acceptance_criteria",
+    "depends_on",
+    "status",
+    "files",
+)
 WORK_ITEM_STATUS_PROPOSED = "proposed"
+
+
+def _validate_file_scopes(value: Any) -> list[str]:
+    """Validate an optional Work Item ``files`` glob-scope list.
+
+    Each entry must be a non-empty, repository-relative POSIX glob pattern:
+    no absolute paths and no ``..`` escapes, matching how
+    ``repository_profile.py`` validates declared test paths. Values are
+    de-duplicated and returned sorted so the Work Item stays deterministic
+    regardless of declaration order.
+    """
+    if not isinstance(value, list):
+        raise ContractError("work item files must be a list of glob patterns")
+    validated: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, str) or not raw.strip():
+            raise ContractError("work item files must not contain blank patterns")
+        candidate = PurePosixPath(raw.strip())
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise ContractError(
+                "work item files must be repository-relative glob patterns "
+                "and must not escape the repository"
+            )
+        validated.add(str(candidate))
+    return sorted(validated)
 
 
 def _validate_string_list(value: Any, label: str) -> list[str]:
@@ -133,6 +166,12 @@ def validate_work_item(value: Any) -> dict[str, Any]:
     marker for an item appended from a validated Discovery that has not passed
     human Framing approval. An absent ``status`` means the item belongs to the
     approved graph.
+
+    ``files`` is optional: a list of repository-relative glob patterns
+    declaring the item's file scope, used for deterministic overlap
+    detection against a commit's changed paths. An absent ``files`` means
+    the item is untouched by every scope-aware code path, exactly as before
+    this field existed.
     """
     if not isinstance(value, dict):
         raise ContractError("work item must be an object")
@@ -165,6 +204,8 @@ def validate_work_item(value: Any) -> dict[str, Any]:
                 f"work item status may only be '{WORK_ITEM_STATUS_PROPOSED}'"
             )
         item["status"] = WORK_ITEM_STATUS_PROPOSED
+    if "files" in value:
+        item["files"] = _validate_file_scopes(value["files"])
     return item
 
 

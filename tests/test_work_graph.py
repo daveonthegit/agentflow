@@ -21,8 +21,10 @@ from agentflow.work_graph import (  # noqa: E402
     InMemoryWorkGraphBackend,
     JsonlWorkGraphBackend,
     apply_discoveries,
+    changed_paths_for_commit,
     compute_ready_work,
     default_work_graph_backend,
+    items_touching,
     load_work_graph,
     save_work_graph,
     work_item_content_hash,
@@ -77,6 +79,45 @@ class WorkGraphContractTests(unittest.TestCase):
     def test_unknown_field_rejected(self) -> None:
         with self.assertRaises(ContractError):
             validate_work_graph([{"id": "a", "summary": "A", "status": "done"}])
+
+    def test_item_without_files_is_unchanged(self) -> None:
+        graph = validate_work_graph([_item("a")])
+        self.assertNotIn("files", graph[0])
+
+    def test_valid_file_scopes_are_normalized_and_deduplicated(self) -> None:
+        graph = validate_work_graph(
+            [
+                {
+                    **_item("a"),
+                    "files": ["src/agentflow/foo.py", "  src/agentflow/foo.py  ", "docs/**"],
+                }
+            ]
+        )
+        self.assertEqual(graph[0]["files"], ["docs/**", "src/agentflow/foo.py"])
+
+    def test_empty_file_scope_list_is_valid(self) -> None:
+        graph = validate_work_graph([{**_item("a"), "files": []}])
+        self.assertEqual(graph[0]["files"], [])
+
+    def test_blank_file_scope_rejected(self) -> None:
+        with self.assertRaises(ContractError):
+            validate_work_graph([{**_item("a"), "files": [""]}])
+
+    def test_absolute_file_scope_rejected(self) -> None:
+        with self.assertRaises(ContractError):
+            validate_work_graph([{**_item("a"), "files": ["/etc/passwd"]}])
+
+    def test_escaping_file_scope_rejected(self) -> None:
+        with self.assertRaises(ContractError):
+            validate_work_graph([{**_item("a"), "files": ["../outside/**"]}])
+
+    def test_non_string_file_scope_rejected(self) -> None:
+        with self.assertRaises(ContractError):
+            validate_work_graph([{**_item("a"), "files": [123]}])
+
+    def test_file_scopes_must_be_a_list(self) -> None:
+        with self.assertRaises(ContractError):
+            validate_work_graph([{**_item("a"), "files": "src/**"}])
 
 
 class WorkGraphBackendTests(unittest.TestCase):
@@ -595,6 +636,115 @@ class ReadyWorkTests(unittest.TestCase):
             work_item_content_hash(item),
             work_item_content_hash({**item, "summary": "changed"}),
         )
+
+
+class ItemsTouchingTests(unittest.TestCase):
+    def test_exact_path_match(self) -> None:
+        graph = validate_work_graph(
+            [{**_item("a"), "files": ["src/agentflow/foo.py"]}]
+        )
+        self.assertEqual(
+            [item["id"] for item in items_touching(graph, ["src/agentflow/foo.py"])],
+            ["a"],
+        )
+        self.assertEqual(
+            items_touching(graph, ["src/agentflow/bar.py"]), []
+        )
+
+    def test_single_star_matches_within_one_segment_only(self) -> None:
+        graph = validate_work_graph(
+            [{**_item("a"), "files": ["src/agentflow/*.py"]}]
+        )
+        self.assertEqual(
+            [item["id"] for item in items_touching(graph, ["src/agentflow/foo.py"])],
+            ["a"],
+        )
+        # A nested path should not match a single-segment "*" wildcard.
+        self.assertEqual(
+            items_touching(graph, ["src/agentflow/sub/foo.py"]), []
+        )
+
+    def test_double_star_is_recursive_across_segments(self) -> None:
+        graph = validate_work_graph(
+            [{**_item("a"), "files": ["src/agentflow/**/*.py"]}]
+        )
+        self.assertEqual(
+            [
+                item["id"]
+                for item in items_touching(graph, ["src/agentflow/sub/deep/foo.py"])
+            ],
+            ["a"],
+        )
+        # "**/" also matches zero intervening segments.
+        self.assertEqual(
+            [item["id"] for item in items_touching(graph, ["src/agentflow/foo.py"])],
+            ["a"],
+        )
+
+    def test_proposed_items_are_ignored(self) -> None:
+        graph = validate_work_graph(
+            [
+                {
+                    **_item("a"),
+                    "files": ["src/**"],
+                    "status": "proposed",
+                }
+            ]
+        )
+        self.assertEqual(items_touching(graph, ["src/foo.py"]), [])
+
+    def test_items_without_files_never_match(self) -> None:
+        graph = validate_work_graph([_item("a")])
+        self.assertEqual(items_touching(graph, ["anything.py"]), [])
+
+    def test_items_with_empty_file_scope_never_match(self) -> None:
+        graph = validate_work_graph([{**_item("a"), "files": []}])
+        self.assertEqual(items_touching(graph, ["anything.py"]), [])
+
+    def test_result_order_is_deterministic_and_matches_graph_order(self) -> None:
+        graph = validate_work_graph(
+            [
+                {**_item("b"), "files": ["shared/**"]},
+                {**_item("a"), "files": ["shared/**"]},
+            ]
+        )
+        self.assertEqual(
+            [item["id"] for item in items_touching(graph, ["shared/x.py"])],
+            ["b", "a"],
+        )
+
+    def test_no_changed_paths_matches_nothing(self) -> None:
+        graph = validate_work_graph([{**_item("a"), "files": ["src/**"]}])
+        self.assertEqual(items_touching(graph, []), [])
+
+
+class ChangedPathsForCommitTests(unittest.TestCase):
+    def _run_git(self, *args: str, cwd: Path) -> None:
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+    def test_maps_a_real_commit_to_its_changed_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir)
+            self._run_git("init", cwd=repository)
+            self._run_git("config", "user.email", "test@example.com", cwd=repository)
+            self._run_git("config", "user.name", "Test", cwd=repository)
+            (repository / "a.txt").write_text("one\n", encoding="utf-8")
+            (repository / "sub").mkdir()
+            (repository / "sub" / "b.txt").write_text("two\n", encoding="utf-8")
+            self._run_git("add", "a.txt", "sub/b.txt", cwd=repository)
+            self._run_git("commit", "-m", "initial", cwd=repository)
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repository,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            sha = result.stdout.strip()
+            self.assertEqual(
+                sorted(changed_paths_for_commit(repository, sha)),
+                ["a.txt", "sub/b.txt"],
+            )
 
 
 class WorkCommandTests(unittest.TestCase):

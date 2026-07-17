@@ -23,6 +23,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import subprocess
 from typing import Protocol
 
 from .contracts import (
@@ -410,3 +412,109 @@ def compute_ready_work(
         if all(dep in completed_ids for dep in item["depends_on"]):
             ready.append(item)
     return ready
+
+
+# --- File-scope overlap detection ------------------------------------------
+#
+# A Work Item's optional ``files`` field declares its scope as repository-
+# relative glob patterns (validated in ``contracts.py``). Matching uses glob
+# semantics with ``**`` as a recursive path-segment wildcard and a bare ``*``
+# restricted to a single path segment (it never crosses ``/``) — the same
+# convention as ``git`` pathspecs and ``pathlib``/``fnmatch`` glob patterns in
+# general. This is deliberately a hand-rolled translator rather than
+# ``PurePosixPath.full_match``/``fnmatch.fnmatch``: both of those treat a bare
+# ``*`` as matching ``/`` too (there is no distinct recursive wildcard),
+# which would make ``*`` and ``**`` behave identically and defeat the point
+# of declaring ``**`` explicitly.
+
+
+def _glob_to_regex(pattern: str) -> re.Pattern[str]:
+    """Compile one repository-relative glob pattern to an anchored regex.
+
+    ``**/`` (and a trailing ``**``) matches zero or more path segments,
+    including none — so ``src/**/test.py`` matches both ``src/test.py`` and
+    ``src/a/b/test.py``. A bare ``*`` matches within a single path segment
+    only. ``?`` matches one non-``/`` character. ``[...]`` character classes
+    are passed through, with a leading ``!`` negated like ``fnmatch``.
+    """
+    i, length = 0, len(pattern)
+    regex = ""
+    while i < length:
+        char = pattern[i]
+        if char == "*":
+            if pattern[i : i + 2] == "**":
+                if pattern[i : i + 3] == "**/":
+                    regex += "(?:.*/)?"
+                    i += 3
+                else:
+                    regex += ".*"
+                    i += 2
+            else:
+                regex += "[^/]*"
+                i += 1
+        elif char == "?":
+            regex += "[^/]"
+            i += 1
+        elif char == "[":
+            end = pattern.find("]", i + 1)
+            if end == -1:
+                regex += re.escape(char)
+                i += 1
+            else:
+                chunk = pattern[i + 1 : end]
+                if chunk.startswith("!"):
+                    chunk = "^" + chunk[1:]
+                regex += "[" + chunk + "]"
+                i = end + 1
+        else:
+            regex += re.escape(char)
+            i += 1
+    return re.compile("^" + regex + "$")
+
+
+def _path_matches_any_scope(path: str, scopes: list[str]) -> bool:
+    return any(_glob_to_regex(pattern).match(path) for pattern in scopes)
+
+
+def items_touching(
+    graph_items: list[dict], changed_paths: list[str]
+) -> list[dict]:
+    """Open Work Items whose declared ``files`` scope matches a changed path.
+
+    Pure and deterministic: given the Work Graph's items and a list of
+    repository-relative changed paths (as produced by
+    ``changed_paths_for_commit``), returns the items in graph order whose
+    ``files`` glob scope matches at least one changed path. ``proposed``
+    items are excluded, matching the "open" Work Item notion used elsewhere
+    (e.g. ``compute_ready_work``). Items without a ``files`` field have no
+    scope and are never returned, matching current behavior exactly.
+    """
+    touched: list[dict] = []
+    for item in graph_items:
+        if item.get("status") == WORK_ITEM_STATUS_PROPOSED:
+            continue
+        scopes = item.get("files") or []
+        if not scopes:
+            continue
+        if any(_path_matches_any_scope(path, scopes) for path in changed_paths):
+            touched.append(item)
+    return touched
+
+
+def changed_paths_for_commit(repository: Path, sha: str) -> list[str]:
+    """Repository-relative paths a commit changed, via ``git show``.
+
+    A thin wrapper only: it shells out to
+    ``git show --name-only --format= <sha>`` and parses the output into a
+    list of paths, kept separate from the pure ``items_touching`` matcher so
+    callers (the future work-drift-report command) can go from a commit SHA
+    to overlapping Work Items without coupling the two concerns.
+    """
+    result = subprocess.run(
+        ["git", "show", "--no-color", "--name-only", "--format=", sha],
+        cwd=repository,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
