@@ -13,6 +13,9 @@ PROFILE_RELATIVE_PATH = Path(".agentflow/repository-profile.json")
 # Merge strategies a Repository Profile merge_policy may declare.
 MERGE_STRATEGIES = ("fast-forward", "merge")
 
+# Deployment adapters a Repository Profile deployment block may declare.
+DEPLOYMENT_ADAPTERS = ("command", "directory")
+
 
 @dataclass(frozen=True)
 class CreatedProfile:
@@ -127,12 +130,50 @@ def _validated_merge_policy(merge_policy: dict, repository: Path) -> dict:
     }
 
 
+def _validated_deployment(deployment: dict) -> dict:
+    """Normalize a declared deployment configuration for the profile.
+
+    ``adapter`` must name one of ``DEPLOYMENT_ADAPTERS``; ``config`` carries
+    the adapter's settings — a non-empty ``target`` path for the directory
+    adapter, a non-empty ``command`` for the command adapter. Absent or
+    invalid configuration is rejected here so a committed profile either
+    permits deployment explicitly or `agentflow deploy` refuses by default.
+    """
+    adapter = deployment.get("adapter")
+    if adapter not in DEPLOYMENT_ADAPTERS:
+        raise ValueError(
+            "Repository Profile deployment.adapter must be one of "
+            + ", ".join(DEPLOYMENT_ADAPTERS)
+        )
+    config = deployment.get("config")
+    if not isinstance(config, dict):
+        raise ValueError(
+            "Repository Profile deployment.config must be an object"
+        )
+    if adapter == "directory":
+        target = config.get("target")
+        if not isinstance(target, str) or not target.strip():
+            raise ValueError(
+                "Repository Profile directory deployment requires a "
+                "non-empty config.target path"
+            )
+        return {"adapter": adapter, "config": {"target": target.strip()}}
+    command = config.get("command")
+    if not isinstance(command, str) or not shlex.split(command):
+        raise ValueError(
+            "Repository Profile command deployment requires a non-empty "
+            "config.command"
+        )
+    return {"adapter": adapter, "config": {"command": command}}
+
+
 def create_repository_profile(
     *,
     repository: Path,
     checks: list[str],
     test_paths: list[str] | None = None,
     merge_policy: dict | None = None,
+    deployment: dict | None = None,
 ) -> CreatedProfile:
     repository = _repository_root(repository)
     files = _repository_files(repository)
@@ -155,6 +196,8 @@ def create_repository_profile(
         profile["test_paths"] = _validated_test_paths(test_paths)
     if merge_policy is not None:
         profile["merge_policy"] = _validated_merge_policy(merge_policy, repository)
+    if deployment is not None:
+        profile["deployment"] = _validated_deployment(deployment)
     profile_path = repository / PROFILE_RELATIVE_PATH
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     profile_path.write_text(
