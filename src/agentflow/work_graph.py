@@ -51,6 +51,7 @@ from .contracts import (
     validate_work_graph,
 )
 from .run_kernel import COMPLETED_RUN_STATES, list_runs
+from .work_md import write_work_md
 
 WORK_RELATIVE_DIR = Path(".agentflow/work")
 DEFAULT_GRAPH_FILENAME = "graph.jsonl"
@@ -102,6 +103,16 @@ class JsonlWorkGraphBackend:
     def __init__(self, repository: Path) -> None:
         self._repository = repository
         self._work_dir = repository / WORK_RELATIVE_DIR
+
+    @property
+    def repository(self) -> Path:
+        """Target Repository this JSONL store persists into.
+
+        Exposed so ``save_work_graph`` can regenerate the ``WORK.md`` mirror at
+        the repository root after a native write. In-memory backends have no
+        repository and so never trigger mirror regeneration.
+        """
+        return self._repository
 
     def read_items(self) -> list[dict]:
         if not self._work_dir.is_dir():
@@ -404,6 +415,12 @@ def save_work_graph(
         repository if repository is not None else Path.cwd()
     )
     store.write_items(validated)
+    # Regenerate the WORK.md mirror for any repository-backed store so every
+    # graph mutation leaves the board current. In-memory backends expose no
+    # repository and are skipped: there is nothing on disk to mirror.
+    store_repository = getattr(store, "repository", None)
+    if store_repository is not None:
+        write_work_md(store_repository, validated)
     return validated
 
 
