@@ -206,9 +206,17 @@ def _install_hooks(repository: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
     A hook we manage (or an absent one) is (re)installed; a foreign hook of the
     same name is preserved untouched and reported, so init never clobbers a
     developer's own hook.
+
+    ``core.hooksPath`` can point the hooks directory outside the repository (a
+    shared, org-wide hooks directory is a common setup). Init is only authorized
+    to configure the target repository, so a hooks directory that lies outside
+    it is left untouched — writing there would silently rewrite hooks other
+    repositories rely on.
     """
     hooks_source = Path(__file__).parent / "hooks"
     hooks_dir = _hooks_dir(repository)
+    if not _is_within(hooks_dir, repository):
+        return (), ()
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
     installed: list[str] = []
@@ -304,6 +312,13 @@ def _suggested_reinclusion(ignore_rule: str) -> tuple[str, tuple[str, ...]]:
 
     fix_file = source if source else ".gitignore"
     return fix_file, tuple(lines)
+
+
+def _is_within(candidate: Path, root: Path) -> bool:
+    """True when ``candidate`` is ``root`` itself or nested beneath it."""
+    candidate = candidate.resolve()
+    root = root.resolve()
+    return candidate == root or root in candidate.parents
 
 
 def _hooks_dir(repository: Path) -> Path:
