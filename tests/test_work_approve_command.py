@@ -15,9 +15,11 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from agentflow.contracts import validate_work_graph  # noqa: E402
 from agentflow.work_graph import (  # noqa: E402
     approve_work_graph,
+    read_repo_work_graph_approvals,
     read_work_graph_approvals,
     require_approved_work_graph,
     save_work_graph,
+    verify_repo_work_graph_approval,
     work_graph_content_hash,
 )
 
@@ -323,6 +325,192 @@ class CaptureGateTests(unittest.TestCase):
             self.assertNotEqual(report.returncode, 0)
             self.assertIn("not approved", report.stderr)
             self.assertFalse((data_dir / "runs").exists())
+
+
+class PortableRepoApprovalTests(unittest.TestCase):
+    def test_approve_mirrors_a_matching_record_into_the_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            repository = temp_path / "repo"
+            data_dir = temp_path / "home"
+            _init_repo(repository, [HEALTH_ITEM])
+
+            approve_work_graph(
+                repository=repository,
+                data_dir=data_dir,
+                approved_by="daveonthegit",
+            )
+
+            expected_hash = work_graph_content_hash(
+                validate_work_graph([HEALTH_ITEM])
+            )
+            home_records = read_work_graph_approvals(data_dir)
+            repo_records = read_repo_work_graph_approvals(repository)
+            self.assertEqual(len(home_records), 1)
+            self.assertEqual(len(repo_records), 1)
+            repo_record = repo_records[0]
+            # The mirror carries the same shape and attribution as the home
+            # evidence, binding the same graph content hash by content, not SHA.
+            self.assertEqual(repo_record["type"], "work_graph_approved")
+            self.assertNotIn("approved_sha", repo_record)
+            self.assertEqual(repo_record["approved_by"], "daveonthegit")
+            self.assertEqual(repo_record["graph_hash"], expected_hash)
+            self.assertEqual(
+                repo_record["graph_hash"], home_records[0]["graph_hash"]
+            )
+            self.assertEqual(repo_record["sequence"], 1)
+            self.assertIn("approved_at", repo_record)
+
+    def test_mirror_is_git_tracked_outside_the_work_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            repository = temp_path / "repo"
+            data_dir = temp_path / "home"
+            _init_repo(repository, [HEALTH_ITEM])
+            approve_work_graph(
+                repository=repository,
+                data_dir=data_dir,
+                approved_by="daveonthegit",
+            )
+
+            mirror = repository / ".agentflow" / "approvals.jsonl"
+            self.assertTrue(mirror.is_file())
+            # Outside .agentflow/work/, so it is never parsed as graph content
+            # and does not perturb the approved graph hash.
+            self.assertNotIn("work", mirror.relative_to(repository).parts[:-1])
+            self.assertEqual(
+                work_graph_content_hash(validate_work_graph([HEALTH_ITEM])),
+                read_repo_work_graph_approvals(repository)[-1]["graph_hash"],
+            )
+            # git can track the mirror (it is not ignored).
+            status = subprocess.run(
+                ["git", "status", "--porcelain", ".agentflow/approvals.jsonl"],
+                cwd=repository,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertIn("approvals.jsonl", status.stdout)
+
+    def test_repo_only_verification_succeeds_without_home_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            repository = temp_path / "repo"
+            data_dir = temp_path / "home"
+            _init_repo(repository, [HEALTH_ITEM])
+            approve_work_graph(
+                repository=repository,
+                data_dir=data_dir,
+                approved_by="daveonthegit",
+            )
+
+            # Simulate a CI runner / teammate machine: point Agentflow Home at a
+            # fresh empty dir and delete the home evidence entirely.
+            empty_home = temp_path / "empty-home"
+            empty_home.mkdir()
+            os.environ["AGENTFLOW_HOME"] = str(empty_home)
+            try:
+                self.assertEqual(read_work_graph_approvals(empty_home), [])
+                status = verify_repo_work_graph_approval(repository)
+            finally:
+                del os.environ["AGENTFLOW_HOME"]
+
+            self.assertTrue(status.is_current)
+            expected_hash = work_graph_content_hash(
+                validate_work_graph([HEALTH_ITEM])
+            )
+            self.assertEqual(status.graph_hash, expected_hash)
+            self.assertEqual(status.approved_graph_hash, expected_hash)
+            self.assertEqual(status.approval["approved_by"], "daveonthegit")
+
+    def test_repo_only_verification_reports_stale_after_a_graph_edit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            repository = temp_path / "repo"
+            data_dir = temp_path / "home"
+            _init_repo(repository, [HEALTH_ITEM])
+            approve_work_graph(
+                repository=repository,
+                data_dir=data_dir,
+                approved_by="daveonthegit",
+            )
+            self.assertTrue(
+                verify_repo_work_graph_approval(repository).is_current
+            )
+
+            # Editing the graph after approval makes the mirror stale, using the
+            # repository alone to detect it.
+            _commit_graph(
+                repository, [{**HEALTH_ITEM, "summary": "Changed summary"}]
+            )
+            status = verify_repo_work_graph_approval(repository)
+            self.assertFalse(status.is_current)
+            self.assertNotEqual(
+                status.approved_graph_hash, status.graph_hash
+            )
+            self.assertIsNotNone(status.approved_graph_hash)
+
+    def test_repo_only_verification_reports_unapproved_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            repository = temp_path / "repo"
+            _init_repo(repository, [HEALTH_ITEM])
+
+            status = verify_repo_work_graph_approval(repository)
+            self.assertFalse(status.is_current)
+            self.assertIsNone(status.approval)
+            self.assertIsNone(status.approved_graph_hash)
+            self.assertEqual(
+                status.graph_hash,
+                work_graph_content_hash(validate_work_graph([HEALTH_ITEM])),
+            )
+
+    def test_repo_mirror_sequences_are_contiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            repository = temp_path / "repo"
+            data_dir = temp_path / "home"
+            _init_repo(repository, [HEALTH_ITEM])
+
+            approve_work_graph(
+                repository=repository, data_dir=data_dir, approved_by="first"
+            )
+            approve_work_graph(
+                repository=repository, data_dir=data_dir, approved_by="second"
+            )
+
+            repo_records = read_repo_work_graph_approvals(repository)
+            self.assertEqual(
+                [record["sequence"] for record in repo_records], [1, 2]
+            )
+            self.assertEqual(
+                [record["approved_by"] for record in repo_records],
+                ["first", "second"],
+            )
+
+    def test_latest_mirror_binds_even_after_reverting_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            repository = temp_path / "repo"
+            data_dir = temp_path / "home"
+            _init_repo(repository, [HEALTH_ITEM])
+            approve_work_graph(
+                repository=repository, data_dir=data_dir, approved_by="a"
+            )
+            # Approve a changed graph, then revert the content: like the home
+            # gate, only the latest mirrored approval binds.
+            _commit_graph(
+                repository, [{**HEALTH_ITEM, "summary": "Changed summary"}]
+            )
+            approve_work_graph(
+                repository=repository, data_dir=data_dir, approved_by="a"
+            )
+            _commit_graph(repository, [HEALTH_ITEM])
+            self.assertFalse(
+                verify_repo_work_graph_approval(repository).is_current
+            )
 
 
 if __name__ == "__main__":

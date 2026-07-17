@@ -10,6 +10,11 @@ import subprocess
 
 PROFILE_RELATIVE_PATH = Path(".agentflow/repository-profile.json")
 
+# Agentflow-managed evidence that describes the repository but is not profiled
+# source: excluded from the fingerprint so writing an approval mirror
+# (`.agentflow/approvals.jsonl`) never makes a captured profile look stale.
+APPROVALS_RELATIVE_PATH = Path(".agentflow/approvals.jsonl")
+
 # Merge strategies a Repository Profile merge_policy may declare.
 MERGE_STRATEGIES = ("fast-forward", "merge")
 
@@ -55,7 +60,8 @@ def _repository_files(repository: Path) -> list[Path]:
     return sorted(
         path
         for path in paths
-        if path != PROFILE_RELATIVE_PATH and (repository / path).is_file()
+        if path not in (PROFILE_RELATIVE_PATH, APPROVALS_RELATIVE_PATH)
+        and (repository / path).is_file()
     )
 
 

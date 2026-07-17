@@ -197,7 +197,19 @@ def start_run(
         task_input["source"] = source
     task = validate_task_spec(task_input)
     repository = Path(_git("rev-parse", "--show-toplevel", cwd=repository))
-    if _git("status", "--porcelain", "--untracked-files=all", cwd=repository):
+    # Agentflow's own git-tracked approval mirror (.agentflow/approvals.jsonl)
+    # is written by `work approve` and committed as normal evidence; an
+    # uncommitted mirror is not a source change and must not block a Run, since
+    # home evidence — not the mirror — governs the capture gate.
+    if _git(
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--",
+        ".",
+        ":(exclude).agentflow/approvals.jsonl",
+        cwd=repository,
+    ):
         raise ValueError("Target Repository must be clean before starting a Run")
     if task.get("source", {}).get("provider") == "work-graph":
         # Capture gate: a Run may capture a Work Item only from a Work Graph

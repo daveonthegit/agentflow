@@ -11,6 +11,23 @@ Persistence goes through a replaceable ``WorkGraphBackend``. The default is the
 native JSONL store; an in-memory backend exists for tests and adapters. Backend
 swaps change only storage — validation and ready-work semantics stay in this
 module.
+
+Work Graph approvals are recorded in two places. Agentflow Home holds the
+authoritative evidence log that the capture gate reads
+(``require_approved_work_graph``): it governs whether a Run may capture a Work
+Item, and its behavior is unchanged by anything here. Every approval is *also*
+mirrored into a git-tracked ``.agentflow/approvals.jsonl`` in the Target
+Repository so approval currency is verifiable from the repository alone — on a
+CI runner or a teammate's machine that has no Agentflow Home state
+(``verify_repo_work_graph_approval``). The repo mirror deliberately lives
+*outside* ``.agentflow/work/``: everything under that directory is loaded as
+Work Graph content, so an approval record there would be folded into the graph
+content hash and invalidate the very approval it records. The two logs share the
+same append-only shape and advisory-lock discipline but carry independent
+sequence numbers. When the two disagree (for example, a repo mirror pulled from
+git without the matching home evidence), home evidence governs the gate; the
+repo-only check is an additional, portable source of truth, never a weaker
+substitute for the gate.
 """
 
 from __future__ import annotations
@@ -147,13 +164,21 @@ def work_graph_content_hash(items: list[dict]) -> str:
 
 
 def _work_graph_approvals_path(data_dir: Path) -> Path:
-    """Evidence log of Work Graph approvals, stored in Agentflow Home."""
+    """Authoritative evidence log of Work Graph approvals in Agentflow Home."""
     return data_dir / "work" / "graph-approvals.jsonl"
 
 
-def read_work_graph_approvals(data_dir: Path) -> list[dict]:
-    """Return recorded Work Graph approvals in append order. Read-only."""
-    path = _work_graph_approvals_path(data_dir)
+def _repo_work_graph_approvals_path(repository: Path) -> Path:
+    """Git-tracked mirror of Work Graph approvals in the Target Repository.
+
+    Deliberately outside ``.agentflow/work/`` so it is never parsed as Work
+    Graph content or folded into the graph content hash.
+    """
+    return Path(repository) / ".agentflow" / "approvals.jsonl"
+
+
+def _read_approvals(path: Path) -> list[dict]:
+    """Return append-ordered approval records from an approvals log. Read-only."""
     if not path.is_file():
         return []
     return [
@@ -161,6 +186,49 @@ def read_work_graph_approvals(data_dir: Path) -> list[dict]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def read_work_graph_approvals(data_dir: Path) -> list[dict]:
+    """Return authoritative home-dir Work Graph approvals in append order."""
+    return _read_approvals(_work_graph_approvals_path(data_dir))
+
+
+def read_repo_work_graph_approvals(repository: Path) -> list[dict]:
+    """Return the repo-tracked Work Graph approval mirror in append order."""
+    return _read_approvals(_repo_work_graph_approvals_path(repository))
+
+
+def _append_approval_record(
+    path: Path,
+    *,
+    approved_by: str,
+    graph_hash: str,
+    repository: str,
+    now: datetime,
+) -> dict:
+    """Append one approval record under advisory-lock append-sequence discipline.
+
+    Mirrors the Run event log convention: the sequence number is the file's
+    line count plus one, computed while holding an exclusive lock so concurrent
+    approvals to the same log serialize and sequences stay contiguous. Each log
+    (home and repo mirror) carries its own independent sequence.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    with path.open("r+", encoding="utf-8") as approvals_file:
+        fcntl.flock(approvals_file.fileno(), fcntl.LOCK_EX)
+        lines = approvals_file.read().splitlines()
+        record = {
+            "approved_at": now.isoformat(),
+            "approved_by": approved_by,
+            "graph_hash": graph_hash,
+            "repository": repository,
+            "sequence": len(lines) + 1,
+            "type": "work_graph_approved",
+        }
+        approvals_file.seek(0, os.SEEK_END)
+        approvals_file.write(json.dumps(record, sort_keys=True) + "\n")
+    return record
 
 
 def approve_work_graph(
@@ -178,28 +246,35 @@ def approve_work_graph(
     record is appended under the same advisory-lock append-sequence discipline
     as Run event logs, so concurrent approvals serialize and sequence numbers
     stay contiguous and equal to line position.
+
+    The approval is recorded twice: the authoritative evidence log in Agentflow
+    Home (returned here and read by the capture gate) and a git-tracked mirror
+    in the Target Repository (``.agentflow/approvals.jsonl``) so approval
+    currency is verifiable from the repository alone. Both records bind to the
+    same graph content hash and attribution; they keep independent sequence
+    numbers because they are separate append-only logs.
     """
     graph = load_work_graph(repository, backend=backend)
     if not graph:
         raise ValueError("cannot approve an empty Work Graph")
     if now is None:
         now = datetime.now(timezone.utc)
-    path = _work_graph_approvals_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch(exist_ok=True)
-    with path.open("r+", encoding="utf-8") as approvals_file:
-        fcntl.flock(approvals_file.fileno(), fcntl.LOCK_EX)
-        lines = approvals_file.read().splitlines()
-        record = {
-            "approved_at": now.isoformat(),
-            "approved_by": approved_by,
-            "graph_hash": work_graph_content_hash(graph),
-            "repository": str(Path(repository).resolve()),
-            "sequence": len(lines) + 1,
-            "type": "work_graph_approved",
-        }
-        approvals_file.seek(0, os.SEEK_END)
-        approvals_file.write(json.dumps(record, sort_keys=True) + "\n")
+    graph_hash = work_graph_content_hash(graph)
+    resolved_repository = str(Path(repository).resolve())
+    record = _append_approval_record(
+        _work_graph_approvals_path(data_dir),
+        approved_by=approved_by,
+        graph_hash=graph_hash,
+        repository=resolved_repository,
+        now=now,
+    )
+    _append_approval_record(
+        _repo_work_graph_approvals_path(repository),
+        approved_by=approved_by,
+        graph_hash=graph_hash,
+        repository=resolved_repository,
+        now=now,
+    )
     return record
 
 
@@ -234,6 +309,63 @@ def require_approved_work_graph(
             "captures a Work Item"
         )
     return graph_hash
+
+
+@dataclass(frozen=True)
+class RepoApprovalStatus:
+    """Result of a repo-only Work Graph approval check.
+
+    ``graph_hash`` is the current content hash of the repository's Work Graph.
+    ``approved_graph_hash`` is the hash bound by the latest repo-tracked
+    approval, or ``None`` when the repository has no approval mirror.
+    ``is_current`` is true only when the latest mirrored approval binds the
+    current graph. ``approval`` is that latest record, or ``None``.
+    """
+
+    is_current: bool
+    graph_hash: str
+    approved_graph_hash: str | None
+    approval: dict | None
+
+
+def verify_repo_work_graph_approval(
+    repository: Path,
+    *,
+    backend: WorkGraphBackend | None = None,
+) -> RepoApprovalStatus:
+    """Answer "is the current graph approved?" from the repository alone.
+
+    Reads only the Target Repository: the Work Graph under ``.agentflow/work/``
+    and the git-tracked approval mirror ``.agentflow/approvals.jsonl``. It needs
+    no Agentflow Home state, so it runs identically in CI, on a teammate's
+    machine, or anywhere the repository is checked out. The latest mirrored
+    approval binds, mirroring the home-dir latest-approval semantics of
+    ``require_approved_work_graph``.
+
+    This is a portable, additional source of truth for approval currency; it is
+    not the capture gate and never weakens it. When the repo mirror and home
+    evidence disagree, home evidence governs Run capture and this check is only
+    for machines that have no home state. It raises ``ContractError`` if the
+    Work Graph itself is invalid, exactly as ``load_work_graph`` does.
+    """
+    graph = load_work_graph(repository, backend=backend)
+    graph_hash = work_graph_content_hash(graph)
+    approvals = read_repo_work_graph_approvals(repository)
+    if not approvals:
+        return RepoApprovalStatus(
+            is_current=False,
+            graph_hash=graph_hash,
+            approved_graph_hash=None,
+            approval=None,
+        )
+    latest = approvals[-1]
+    approved_hash = latest["graph_hash"]
+    return RepoApprovalStatus(
+        is_current=approved_hash == graph_hash,
+        graph_hash=graph_hash,
+        approved_graph_hash=approved_hash,
+        approval=latest,
+    )
 
 
 def load_work_graph(
