@@ -380,7 +380,7 @@ _INDEX_HTML = r"""<!doctype html>
 
   /* ---- runs view ---- */
   #view-runs { display: none; }
-  #view-runs.active { display: grid; grid-template-columns: 340px 1fr; }
+  #view-runs.active { display: grid; grid-template-columns: 340px 1fr; grid-template-rows: minmax(0, 1fr); }
   .runlist { border-right: 1px solid var(--glass-divider); display: flex; flex-direction: column; min-height: 0; }
   .runlist-head { padding: 11px 14px; border-bottom: 1px solid var(--glass-divider); display: flex; align-items: center; gap: 8px; font: 500 12px var(--font); color: var(--text-muted); }
   .runlist-head .count-pill { margin-left: auto; }
@@ -416,9 +416,9 @@ _INDEX_HTML = r"""<!doctype html>
   .gate-strip .gd { font: 400 12px var(--font); color: var(--text-muted); }
   .gate-cmd { font: 400 12px var(--mono); color: var(--text); background: rgba(0,0,0,.25); border: 1px solid var(--border-strong); border-radius: 7px; padding: 6px 11px; cursor: pointer; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; transition: border-color .15s; }
   .gate-cmd:hover { border-color: var(--accent); }
-  .detail-grid { display: grid; grid-template-columns: 1fr 272px; flex: 1; min-height: 0; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 272px; grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; }
 
-  .tpane { display: flex; flex-direction: column; border-right: 1px solid var(--glass-divider); min-width: 0; }
+  .tpane { display: flex; flex-direction: column; border-right: 1px solid var(--glass-divider); min-width: 0; min-height: 0; }
   .tpane-head { padding: 9px 16px; border-bottom: 1px solid var(--glass-divider); display: flex; align-items: center; gap: 8px; font: 500 12px var(--font); color: var(--text-muted); }
   .tpane-head .src { margin-left: auto; color: var(--text-faint); font-weight: 400; }
   .transcript { flex: 1; padding: 14px 16px; overflow: auto; font: 400 12px/1.7 var(--mono); background: rgba(0,0,0,.14); }
@@ -434,7 +434,7 @@ _INDEX_HTML = r"""<!doctype html>
   .t-faint { color: var(--text-faint); }
   .t-muted { color: var(--text-muted); }
 
-  .rail-pane { padding: 15px; display: flex; flex-direction: column; gap: 17px; overflow: auto; }
+  .rail-pane { padding: 15px; display: flex; flex-direction: column; gap: 17px; overflow: auto; min-height: 0; }
   .blk h3 { font: 500 12px var(--font); color: var(--text-muted); margin: 0 0 10px; }
   .stages { display: flex; flex-direction: column; gap: 9px; }
   .stage { display: flex; align-items: center; gap: 9px; font: 400 12px var(--font); color: var(--text-muted); }
