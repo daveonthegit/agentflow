@@ -144,7 +144,9 @@ def validate_work_graph_approval(value: Any) -> dict[str, Any]:
             raise ContractError(
                 f"approval record {field} must be a non-empty string"
             )
-    if not _CONTENT_HASH_PATTERN.fullmatch(value["graph_hash"]):
+    if not isinstance(value["graph_hash"], str) or not _CONTENT_HASH_PATTERN.fullmatch(
+        value["graph_hash"]
+    ):
         raise ContractError(
             "approval record graph_hash must be exactly 64 lowercase "
             "hexadecimal characters"
