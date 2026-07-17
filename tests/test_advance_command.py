@@ -2749,5 +2749,196 @@ raise SystemExit(7)
             self.assertTrue((run_dir / "review-2.json").is_file())
 
 
+class DiscoveryWiringTests(unittest.TestCase):
+    """Discoveries flow from validated role outputs to the Work Graph.
+
+    The only path is the deterministic engine application: the stage event
+    records what was applied, the Target Repository gains proposed Work Items,
+    and any direct agent write to ``.agentflow/work/`` fails the stage.
+    """
+
+    def test_builder_discoveries_reach_the_work_graph_as_proposals(self) -> None:
+        from agentflow.work_graph import compute_ready_work, load_work_graph
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            repository, data_dir, run_id = create_profiled_run(
+                temp_path, environment
+            )
+            fixture_path = temp_path / "adapter-fixture.json"
+            fixture_path.write_text(
+                json.dumps(
+                    {
+                        "builder": {
+                            "output": {
+                                "commands_run": [],
+                                "files_changed": ["README.md"],
+                                "steps_completed": ["P1"],
+                                "unresolved_issues": [],
+                                "discoveries": [
+                                    {
+                                        "key": "found-retry-dup",
+                                        "summary": "Deduplicate the retry helper",
+                                        "acceptance_criteria": [
+                                            "Retry logic lives in one module"
+                                        ],
+                                        "depends_on": [],
+                                    }
+                                ],
+                            },
+                            "writes": {
+                                "README.md": "# Target\n\nHealth documented.\n"
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            built = agentflow(
+                "advance",
+                run_id,
+                "--adapter",
+                "fake",
+                "--adapter-fixture",
+                str(fixture_path),
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(built.returncode, 0, built.stderr)
+
+            build_ready = next(
+                event
+                for event in _events(data_dir, run_id)
+                if event["type"] == "build_ready"
+            )
+            self.assertEqual(
+                build_ready["discoveries_applied"], ["found-retry-dup"]
+            )
+            self.assertEqual(build_ready["discoveries_skipped"], [])
+
+            graph = load_work_graph(repository)
+            by_id = {item["id"]: item for item in graph}
+            self.assertEqual(by_id["found-retry-dup"]["status"], "proposed")
+            self.assertEqual(
+                by_id["found-retry-dup"]["acceptance_criteria"],
+                ["Retry logic lives in one module"],
+            )
+            # Proposals never become ready work without human approval.
+            self.assertEqual(
+                [item["id"] for item in compute_ready_work(graph, set())], []
+            )
+
+    def test_tester_discoveries_reach_the_work_graph_as_proposals(self) -> None:
+        from agentflow.work_graph import load_work_graph
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            data_dir, run_id = create_built_run(temp_path, environment)
+            repository = Path(
+                json.loads(
+                    (data_dir / "runs" / run_id / "repository.json").read_text(
+                        encoding="utf-8"
+                    )
+                )["repository"]
+            )
+            verified = agentflow(
+                "advance",
+                run_id,
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            fixture = {
+                "tester": {
+                    **TESTER_NO_CHANGE_FIXTURE["tester"],
+                    "discoveries": [
+                        {
+                            "key": "found-untested-path",
+                            "summary": "Cover the error path with tests",
+                        }
+                    ],
+                }
+            }
+            tested = advance_tester(
+                temp_path, data_dir, run_id, environment, fixture
+            )
+            self.assertEqual(json.loads(tested.stdout)["state"], "tested")
+            tests_ready = next(
+                event
+                for event in _events(data_dir, run_id)
+                if event["type"] == "tests_ready"
+            )
+            self.assertEqual(
+                tests_ready["discoveries_applied"], ["found-untested-path"]
+            )
+            by_id = {item["id"]: item for item in load_work_graph(repository)}
+            self.assertEqual(by_id["found-untested-path"]["status"], "proposed")
+
+    def test_builder_direct_write_to_work_graph_fails_the_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")}
+            repository, data_dir, run_id = create_profiled_run(
+                temp_path, environment
+            )
+            planted = json.dumps(
+                {
+                    "id": "smuggled",
+                    "summary": "Bypass the validation path",
+                    "acceptance_criteria": [],
+                    "depends_on": [],
+                }
+            )
+            fixture_path = temp_path / "adapter-fixture.json"
+            fixture_path.write_text(
+                json.dumps(
+                    {
+                        "builder": {
+                            "output": {
+                                "commands_run": [],
+                                "files_changed": [
+                                    ".agentflow/work/graph.jsonl",
+                                    "README.md",
+                                ],
+                                "steps_completed": ["P1"],
+                                "unresolved_issues": [],
+                            },
+                            "writes": {
+                                ".agentflow/work/graph.jsonl": planted + "\n",
+                                "README.md": "# Target\n\nHealth documented.\n",
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            built = agentflow(
+                "advance",
+                run_id,
+                "--adapter",
+                "fake",
+                "--adapter-fixture",
+                str(fixture_path),
+                "--data-dir",
+                str(data_dir),
+                cwd=temp_path,
+                environment=environment,
+            )
+            self.assertNotEqual(built.returncode, 0)
+            self.assertIn("wrote Work Graph files directly", built.stderr)
+            self.assertNotIn(
+                "build_ready",
+                [event["type"] for event in _events(data_dir, run_id)],
+            )
+            # Nothing reached the Target Repository's Work Graph store.
+            self.assertFalse((repository / ".agentflow" / "work").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

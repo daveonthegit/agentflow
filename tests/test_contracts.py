@@ -3,8 +3,12 @@ from __future__ import annotations
 import unittest
 
 from agentflow.contracts import (
+    MAX_DISCOVERIES_PER_OUTPUT,
     ContractError,
     contract_schema,
+    validate_builder_report,
+    validate_discoveries,
+    validate_review,
     validate_task_spec,
     validate_tester_report,
 )
@@ -82,6 +86,117 @@ class TesterContractTests(unittest.TestCase):
             sorted(schema["required"]), ["files_changed", "findings", "summary"]
         )
         self.assertFalse(schema["additionalProperties"])
+
+
+def valid_discovery(**overrides):
+    discovery = {
+        "key": "found-cleanup",
+        "summary": "Extract the duplicated retry helper",
+        "acceptance_criteria": ["Retry logic lives in one module"],
+        "depends_on": [],
+    }
+    discovery.update(overrides)
+    return discovery
+
+
+def valid_builder_report(**overrides):
+    report = {
+        "commands_run": [],
+        "files_changed": [],
+        "steps_completed": ["P1"],
+        "unresolved_issues": [],
+    }
+    report.update(overrides)
+    return report
+
+
+class DiscoveryContractTests(unittest.TestCase):
+    def test_roles_accept_capped_dedup_keyed_discoveries(self) -> None:
+        discoveries = [
+            valid_discovery(key=f"finding-{index}")
+            for index in range(MAX_DISCOVERIES_PER_OUTPUT)
+        ]
+        builder = validate_builder_report(
+            valid_builder_report(discoveries=discoveries)
+        )
+        tester = validate_tester_report(
+            valid_tester_report(discoveries=discoveries)
+        )
+        review = validate_review(
+            {
+                "disposition": "approve",
+                "findings": [],
+                "discoveries": discoveries,
+            }
+        )
+        for report in (builder, tester, review):
+            self.assertEqual(
+                [item["key"] for item in report["discoveries"]],
+                [f"finding-{index}" for index in range(MAX_DISCOVERIES_PER_OUTPUT)],
+            )
+
+    def test_reports_without_discoveries_remain_valid(self) -> None:
+        self.assertNotIn(
+            "discoveries", validate_builder_report(valid_builder_report())
+        )
+        self.assertNotIn(
+            "discoveries", validate_tester_report(valid_tester_report())
+        )
+        self.assertNotIn(
+            "discoveries",
+            validate_review({"disposition": "approve", "findings": []}),
+        )
+
+    def test_over_cap_discoveries_rejected_in_every_role(self) -> None:
+        over_cap = [
+            valid_discovery(key=f"finding-{index}")
+            for index in range(MAX_DISCOVERIES_PER_OUTPUT + 1)
+        ]
+        with self.assertRaisesRegex(ContractError, "at most"):
+            validate_builder_report(valid_builder_report(discoveries=over_cap))
+        with self.assertRaisesRegex(ContractError, "at most"):
+            validate_tester_report(valid_tester_report(discoveries=over_cap))
+        with self.assertRaisesRegex(ContractError, "at most"):
+            validate_review(
+                {
+                    "disposition": "approve",
+                    "findings": [],
+                    "discoveries": over_cap,
+                }
+            )
+
+    def test_duplicate_keys_rejected(self) -> None:
+        duplicated = [valid_discovery(), valid_discovery(summary="Again")]
+        with self.assertRaisesRegex(ContractError, "duplicate keys"):
+            validate_discoveries(duplicated)
+        with self.assertRaisesRegex(ContractError, "duplicate keys"):
+            validate_tester_report(valid_tester_report(discoveries=duplicated))
+
+    def test_discovery_normalizes_and_rejects_malformed_entries(self) -> None:
+        normalized = validate_discoveries(
+            [valid_discovery(key=" found-cleanup ", summary=" Extract helper ")]
+        )
+        self.assertEqual(normalized[0]["key"], "found-cleanup")
+        self.assertEqual(normalized[0]["summary"], "Extract helper")
+        with self.assertRaisesRegex(ContractError, "unknown fields"):
+            validate_discoveries([valid_discovery(extra=True)])
+        with self.assertRaisesRegex(ContractError, "key"):
+            validate_discoveries([valid_discovery(key="  ")])
+        with self.assertRaisesRegex(ContractError, "depend on itself"):
+            validate_discoveries([valid_discovery(depends_on=["found-cleanup"])])
+        with self.assertRaisesRegex(ContractError, "must be a list"):
+            validate_discoveries({"key": "not-a-list"})
+
+    def test_schemas_declare_optional_capped_discoveries(self) -> None:
+        for role in ("builder", "tester", "reviewer"):
+            schema = contract_schema(role)
+            discoveries = schema["properties"]["discoveries"]
+            self.assertEqual(discoveries["maxItems"], MAX_DISCOVERIES_PER_OUTPUT)
+            self.assertEqual(
+                sorted(discoveries["items"]["required"]), ["key", "summary"]
+            )
+            self.assertFalse(discoveries["items"]["additionalProperties"])
+            self.assertNotIn("discoveries", schema["required"])
 
 
 class TaskSpecContractTests(unittest.TestCase):

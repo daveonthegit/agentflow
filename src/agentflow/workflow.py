@@ -18,6 +18,7 @@ from .contracts import (
     validate_tester_report,
 )
 from .reviewer import GATE_BLOCKED, gate_decision
+from .work_graph import WORK_RELATIVE_DIR, apply_discoveries
 from .run_kernel import (
     DEFAULT_CLAIM_LEASE_SECONDS,
     acquire_claim,
@@ -221,7 +222,52 @@ def _enforce_builder_report(
         )
     if report["unresolved_issues"]:
         raise ValueError("builder reported unresolved issues")
+    _reject_work_graph_writes(changed_files, role="builder")
     return changed_files
+
+
+def _reject_work_graph_writes(changed_files: list[str], *, role: str) -> None:
+    """Fail the stage if an Agent Role wrote ``.agentflow/work/`` directly.
+
+    Discoveries are the only channel by which a role proposes Work Graph
+    changes: they travel in the validated output contract and are applied by
+    deterministic engine code. Any direct write to the Work Graph store is
+    rejected here regardless of what the role reported.
+    """
+    offending = sorted(
+        path
+        for path in changed_files
+        if _is_under_test_paths(path, [WORK_RELATIVE_DIR.as_posix()])
+    )
+    if offending:
+        raise ValueError(
+            f"{role} wrote Work Graph files directly: {offending}; "
+            "return discoveries in the role output instead"
+        )
+
+
+def _apply_report_discoveries(report: dict, repository: str | None) -> dict:
+    """Apply a validated report's Discoveries to the Work Graph, if any.
+
+    Runs only in engine code after contract validation: ``apply_discoveries``
+    re-validates, dedups against existing Work Item ids, and appends the
+    remainder as proposed Work Items. Returns event fields recording what was
+    applied and what was dropped, so the stage event carries the evidence.
+    """
+    discoveries = report.get("discoveries")
+    if not discoveries:
+        return {}
+    if repository is None:
+        raise ValueError(
+            "run records no Target Repository; discoveries cannot be applied"
+        )
+    result = apply_discoveries(discoveries, Path(repository))
+    return {
+        "discoveries_applied": result.applied,
+        "discoveries_skipped": sorted(
+            result.skipped_existing + result.skipped_unresolved
+        ),
+    }
 
 
 def _is_under_test_paths(path: str, test_paths: list[str]) -> bool:
@@ -256,6 +302,7 @@ def _enforce_tester_report(
         raise ValueError(
             f"tester changed files outside the declared test paths: {offending}"
         )
+    _reject_work_graph_writes(changed_files, role="tester")
     return changed_files
 
 
@@ -336,6 +383,7 @@ def _advance_builder_repair(
     workspace: Path,
     profile: dict,
     task: dict,
+    repository: str | None,
     builder_request_extra: Callable[[], dict],
 ) -> AdvancedRun:
     """Perform one bounded builder repair, shared by both repair triggers.
@@ -401,6 +449,7 @@ def _advance_builder_repair(
     )
     _assert_workspace_guard(workspace, workspace_guard)
     _enforce_builder_report(report=report, workspace=workspace)
+    discovery_fields = _apply_report_discoveries(report, repository)
     artifact = run_dir / f"repair-report-{repair_attempt}.json"
     artifact.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
@@ -423,6 +472,7 @@ def _advance_builder_repair(
         artifact=str(artifact),
         candidate_sha=new_candidate_sha,
         repair_attempt=repair_attempt,
+        **discovery_fields,
         **_transcript_field(transcript_path),
         **_model_provenance(adapter),
     )
@@ -626,6 +676,7 @@ def _advance_claimed_run(
         changed_files = _enforce_tester_report(
             report=report, workspace=workspace, test_paths=test_paths
         )
+        discovery_fields = _apply_report_discoveries(report, status.repository)
         artifact = run_dir / f"tester-report-{generation}.json"
         artifact.write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n",
@@ -643,6 +694,7 @@ def _advance_claimed_run(
                 artifact=str(artifact),
                 candidate_sha=candidate_sha,
                 checks_artifact=str(checks_path),
+                **discovery_fields,
                 **_transcript_field(transcript_path),
                 **_model_provenance(adapter),
             )
@@ -705,6 +757,7 @@ def _advance_claimed_run(
                 artifact=str(artifact),
                 candidate_sha=new_candidate_sha,
                 checks_artifact=str(post_artifact),
+                **discovery_fields,
                 **_transcript_field(transcript_path),
                 **_model_provenance(adapter),
             )
@@ -724,6 +777,7 @@ def _advance_claimed_run(
             candidate_sha=new_candidate_sha,
             checks_artifact=str(post_artifact),
             findings=report["findings"],
+            **discovery_fields,
             **_transcript_field(transcript_path),
             **_model_provenance(adapter),
         )
@@ -779,6 +833,9 @@ def _advance_claimed_run(
         if after_head != before_head or after_status != before_status:
             raise ValueError("reviewer modified the read-only Workspace")
         _assert_workspace_guard(workspace, workspace_guard)
+        # The reviewer never touches the Workspace; its Discoveries reach the
+        # Target Repository's Work Graph only through this engine path.
+        discovery_fields = _apply_report_discoveries(review, status.repository)
         artifact = run_dir / f"review-{generation}.json"
         artifact.write_text(
             json.dumps(review, indent=2, sort_keys=True) + "\n",
@@ -793,6 +850,7 @@ def _advance_claimed_run(
                 adapter=adapter.name,
                 artifact=str(artifact),
                 candidate_sha=candidate_sha,
+                **discovery_fields,
                 **_transcript_field(transcript_path),
                 **_model_provenance(adapter),
             )
@@ -810,6 +868,7 @@ def _advance_claimed_run(
             adapter=adapter.name,
             artifact=str(artifact),
             candidate_sha=candidate_sha,
+            **discovery_fields,
             **_transcript_field(transcript_path),
             **_model_provenance(adapter),
         )
@@ -847,6 +906,7 @@ def _advance_claimed_run(
             workspace=workspace,
             profile=profile,
             task=task,
+            repository=status.repository,
             builder_request_extra=_review_extra,
         )
 
@@ -879,6 +939,7 @@ def _advance_claimed_run(
             workspace=workspace,
             profile=profile,
             task=task,
+            repository=status.repository,
             builder_request_extra=_tests_failed_extra,
         )
 
@@ -898,6 +959,7 @@ def _advance_claimed_run(
     )
     _assert_workspace_guard(workspace, workspace_guard)
     _enforce_builder_report(report=report, workspace=workspace)
+    discovery_fields = _apply_report_discoveries(report, status.repository)
     artifact = run_dir / f"build-report-{generation}.json"
     artifact.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
@@ -914,6 +976,7 @@ def _advance_claimed_run(
         adapter=adapter.name,
         artifact=str(artifact),
         candidate_sha=candidate_sha,
+        **discovery_fields,
         **_transcript_field(transcript_path),
         **_model_provenance(adapter),
     )

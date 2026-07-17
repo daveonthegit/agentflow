@@ -12,10 +12,15 @@ import unittest
 PROJECT_ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from agentflow.contracts import ContractError, validate_work_graph  # noqa: E402
+from agentflow.contracts import (  # noqa: E402
+    MAX_DISCOVERIES_PER_OUTPUT,
+    ContractError,
+    validate_work_graph,
+)
 from agentflow.work_graph import (  # noqa: E402
     InMemoryWorkGraphBackend,
     JsonlWorkGraphBackend,
+    apply_discoveries,
     compute_ready_work,
     default_work_graph_backend,
     load_work_graph,
@@ -409,6 +414,146 @@ class WorkGraphBackendTests(unittest.TestCase):
             memory = InMemoryWorkGraphBackend([_item("hidden-stale"), _item("old")])
             memory.write_items(replacement)
             self.assertEqual(memory.read_items(), backend.read_items())
+
+
+def _discovery(key: str, depends_on: list[str] | None = None) -> dict:
+    return {
+        "key": key,
+        "summary": f"Discovered {key}",
+        "acceptance_criteria": [],
+        "depends_on": depends_on or [],
+    }
+
+
+class ApplyDiscoveriesTests(unittest.TestCase):
+    def test_applies_discoveries_as_proposed_items_via_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            save_work_graph([_item("a")], repository)
+            result = apply_discoveries(
+                [_discovery("found-x", ["a"]), _discovery("found-y")],
+                repository,
+            )
+            self.assertEqual(result.applied, ["found-x", "found-y"])
+            self.assertEqual(result.skipped_existing, [])
+            self.assertEqual(result.skipped_unresolved, [])
+            graph = load_work_graph(repository)
+            by_id = {item["id"]: item for item in graph}
+            self.assertEqual(by_id["found-x"]["status"], "proposed")
+            self.assertEqual(by_id["found-x"]["depends_on"], ["a"])
+            self.assertNotIn("status", by_id["a"])
+
+    def test_reapplication_is_idempotent(self) -> None:
+        memory = InMemoryWorkGraphBackend()
+        save_work_graph([_item("a")], backend=memory)
+        discoveries = [_discovery("found-x", ["a"])]
+        first = apply_discoveries(discoveries, backend=memory)
+        graph_after_first = load_work_graph(backend=memory)
+        second = apply_discoveries(discoveries, backend=memory)
+        self.assertEqual(first.applied, ["found-x"])
+        self.assertEqual(second.applied, [])
+        self.assertEqual(second.skipped_existing, ["found-x"])
+        self.assertEqual(load_work_graph(backend=memory), graph_after_first)
+
+    def test_duplicate_keys_against_existing_items_are_dropped(self) -> None:
+        memory = InMemoryWorkGraphBackend()
+        save_work_graph([_item("a")], backend=memory)
+        result = apply_discoveries(
+            [_discovery("a"), _discovery("found-new")], backend=memory
+        )
+        self.assertEqual(result.applied, ["found-new"])
+        self.assertEqual(result.skipped_existing, ["a"])
+        graph = load_work_graph(backend=memory)
+        self.assertEqual([item["id"] for item in graph], ["a", "found-new"])
+        # The existing item is untouched, not overwritten by the discovery.
+        self.assertEqual(graph[0]["summary"], "Work a")
+
+    def test_unresolved_and_cyclic_dependencies_are_dropped(self) -> None:
+        memory = InMemoryWorkGraphBackend()
+        save_work_graph([_item("a")], backend=memory)
+        result = apply_discoveries(
+            [
+                _discovery("ghost-dep", ["missing"]),
+                _discovery("cycle-1", ["cycle-2"]),
+                _discovery("cycle-2", ["cycle-1"]),
+                _discovery("fine", ["a"]),
+            ],
+            backend=memory,
+        )
+        self.assertEqual(result.applied, ["fine"])
+        self.assertEqual(
+            result.skipped_unresolved, ["ghost-dep", "cycle-1", "cycle-2"]
+        )
+        self.assertEqual(
+            [item["id"] for item in load_work_graph(backend=memory)],
+            ["a", "fine"],
+        )
+
+    def test_batch_dependencies_resolve_regardless_of_order(self) -> None:
+        memory = InMemoryWorkGraphBackend()
+        result = apply_discoveries(
+            [_discovery("later-first", ["later-second"]), _discovery("later-second")],
+            backend=memory,
+        )
+        self.assertEqual(sorted(result.applied), ["later-first", "later-second"])
+        self.assertEqual(result.skipped_unresolved, [])
+        self.assertEqual(len(load_work_graph(backend=memory)), 2)
+
+    def test_over_cap_and_duplicate_key_batches_are_rejected(self) -> None:
+        memory = InMemoryWorkGraphBackend()
+        over_cap = [
+            _discovery(f"found-{index}")
+            for index in range(MAX_DISCOVERIES_PER_OUTPUT + 1)
+        ]
+        with self.assertRaisesRegex(ContractError, "at most"):
+            apply_discoveries(over_cap, backend=memory)
+        with self.assertRaisesRegex(ContractError, "duplicate keys"):
+            apply_discoveries(
+                [_discovery("same"), _discovery("same")], backend=memory
+            )
+        self.assertEqual(load_work_graph(backend=memory), [])
+
+    def test_no_admitted_discoveries_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            result = apply_discoveries(
+                [_discovery("ghost", ["missing"])], repository
+            )
+            self.assertEqual(result.applied, [])
+            self.assertFalse((repository / ".agentflow" / "work").exists())
+
+    def test_proposed_items_are_excluded_from_ready_work(self) -> None:
+        memory = InMemoryWorkGraphBackend()
+        save_work_graph([_item("a")], backend=memory)
+        apply_discoveries([_discovery("found-x")], backend=memory)
+        graph = load_work_graph(backend=memory)
+        self.assertEqual(
+            [item["id"] for item in compute_ready_work(graph, set())], ["a"]
+        )
+        # A human approving the proposal (removing the marker) makes it ready.
+        approved = [
+            {key: value for key, value in item.items() if key != "status"}
+            for item in graph
+        ]
+        self.assertEqual(
+            [item["id"] for item in compute_ready_work(approved, {"a"})],
+            ["found-x"],
+        )
+
+    def test_backend_swap_preserves_application_semantics(self) -> None:
+        discoveries = [_discovery("found-x"), _discovery("found-y", ["found-x"])]
+        memory = InMemoryWorkGraphBackend()
+        save_work_graph([_item("a")], backend=memory)
+        memory_result = apply_discoveries(discoveries, backend=memory)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            save_work_graph([_item("a")], repository)
+            jsonl_result = apply_discoveries(discoveries, repository)
+            jsonl_graph = load_work_graph(repository)
+
+        self.assertEqual(memory_result.applied, jsonl_result.applied)
+        self.assertEqual(load_work_graph(backend=memory), jsonl_graph)
 
 
 class ReadyWorkTests(unittest.TestCase):
