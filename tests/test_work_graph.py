@@ -585,6 +585,26 @@ class CaptureWorkItemTests(unittest.TestCase):
                 "PYTHONPATH": str(PROJECT_ROOT / "src"),
             }
 
+            # Capture requires the Work Graph to carry a matching approval.
+            approved = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "agentflow",
+                    "work",
+                    "approve",
+                    "--approved-by",
+                    "daveonthegit",
+                    "--data-dir",
+                    str(data_dir),
+                ],
+                cwd=repository,
+                env=environment,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(approved.returncode, 0, approved.stderr)
+
             started = subprocess.run(
                 [
                     sys.executable,
