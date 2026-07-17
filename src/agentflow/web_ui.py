@@ -405,8 +405,9 @@ _INDEX_HTML = r"""<!doctype html>
   .detail-head { padding: 15px 20px; border-bottom: 1px solid var(--glass-divider); display: flex; align-items: flex-start; gap: 12px; flex: none; }
   .detail-head .t { font: 500 18px/1.2 var(--font); letter-spacing: -.01em; cursor: pointer;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .detail-head .t.expanded { -webkit-line-clamp: unset; max-height: 40vh; overflow: auto;
-    font: 400 13px/1.5 var(--font); letter-spacing: 0; }
+  .detail-head .t.expanded { display: block; -webkit-line-clamp: unset; max-height: 40vh;
+    overflow: auto; font: 400 13px/1.5 var(--font); letter-spacing: 0;
+    padding-right: 8px; overscroll-behavior: contain; }
   .detail-head .m { font: 400 12px var(--mono); color: var(--text-faint); margin-top: 4px; }
   .status-chip { display: inline-flex; align-items: center; gap: 7px; padding: 7px 13px; border-radius: 8px; font: 500 13px var(--font); flex: none; white-space: nowrap; }
   .gate-strip { display: none; padding: 11px 20px; border-bottom: 1px solid var(--glass-divider); background: var(--accent-tint); align-items: center; gap: 12px; flex: none; flex-wrap: wrap; }
@@ -486,7 +487,9 @@ _INDEX_HTML = r"""<!doctype html>
   .ev-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
   .ev-title .t { font: 500 18px/1.3 var(--font); letter-spacing: -.01em; cursor: pointer; min-width: 0;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .ev-title .t.expanded { -webkit-line-clamp: unset; font: 400 13px/1.5 var(--font); letter-spacing: 0; }
+  .ev-title .t.expanded { display: block; -webkit-line-clamp: unset; max-height: 40vh;
+    overflow: auto; font: 400 13px/1.5 var(--font); letter-spacing: 0;
+    padding-right: 8px; overscroll-behavior: contain; }
   .ev-title .id { font: 400 12px var(--mono); color: var(--text-faint); }
   .ev-title .ro { margin-left: auto; font: 400 12px var(--font); color: var(--text-faint); }
   .meta-card { border-radius: 10px; overflow: hidden; }
