@@ -67,6 +67,7 @@ from .run_kernel import (
 )
 from .projection import build_projection
 from .reconcile import reconcile
+from .work_reconcile import apply_reconcile, plan_reconcile
 from .web_ui import create_web_server
 from .workflow import advance_run
 
@@ -299,6 +300,8 @@ def main() -> int:
             "approve",
             "proposals",
             "ingest",
+            "reconcile",
+            "reconcile-apply",
         ),
     )
     work_parser.add_argument("--repository", type=Path, default=Path("."))
@@ -315,6 +318,21 @@ def main() -> int:
         help=(
             "record a human approval of the current Work Graph content "
             "(required for `work approve`)"
+        ),
+    )
+    work_parser.add_argument(
+        "--plan",
+        type=Path,
+        help=(
+            "for `work reconcile-apply`: the confirmed reconcile plan JSON "
+            "(the edited output of `work reconcile`)"
+        ),
+    )
+    work_parser.add_argument(
+        "--confirmed-by",
+        help=(
+            "for `work reconcile-apply`: the human attributing the confirmed "
+            "dispositions (required)"
         ),
     )
     work_parser.add_argument("--data-dir", type=Path)
@@ -966,6 +984,63 @@ def main() -> int:
                         "skipped_existing": result.skipped_existing,
                         "skipped_over_cap": result.skipped_over_cap,
                         "state": "ingested",
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.mode == "reconcile":
+            # Planning: walk drift findings and completion-claim proposals into
+            # proposed dispositions. Read-only — every disposition is unconfirmed
+            # until a human edits this plan and runs `work reconcile-apply`.
+            try:
+                plan = plan_reconcile(args.repository)
+            except ContractError as error:
+                print(str(error), file=sys.stderr)
+                return 1
+            print(
+                json.dumps(
+                    {
+                        "approval_boundary": plan.approval_boundary,
+                        "dispositions": plan.dispositions,
+                        "ineligible": plan.ineligible,
+                        "state": "reconcile_planned",
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.mode == "reconcile-apply":
+            if args.confirmed_by is None:
+                parser.error("work reconcile-apply requires --confirmed-by")
+            if args.plan is None:
+                parser.error("work reconcile-apply requires --plan <file>")
+            try:
+                raw = json.loads(args.plan.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                print(f"could not read reconcile plan: {error}", file=sys.stderr)
+                return 1
+            # Accept either a full `work reconcile` plan document or a bare list
+            # of disposition records.
+            dispositions = raw["dispositions"] if isinstance(raw, dict) else raw
+            try:
+                result = apply_reconcile(
+                    args.repository,
+                    dispositions,
+                    confirmed_by=args.confirmed_by,
+                )
+            except (ContractError, KeyError, TypeError) as error:
+                print(str(error), file=sys.stderr)
+                return 1
+            print(
+                json.dumps(
+                    {
+                        "applied": result.applied,
+                        "external_completions": result.external_completions,
+                        "pending_claims": result.pending_claims,
+                        "removed_claims": result.removed_claims,
+                        "skipped_unconfirmed": result.skipped_unconfirmed,
+                        "state": "reconciled",
                     },
                     sort_keys=True,
                 )
