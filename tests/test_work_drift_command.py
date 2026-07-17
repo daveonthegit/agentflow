@@ -307,6 +307,28 @@ class DetectWorkDriftTests(unittest.TestCase):
         self.assertIsNone(report.approval_boundary)
         self.assertEqual(len(report.analyzed_commits), 1)
 
+    def test_known_and_unknown_trailers_on_one_commit_report_only_unknown(
+        self,
+    ) -> None:
+        # A commit can legitimately carry more than one Work-Item trailer
+        # (touches two items at once). One trailer naming a current, open
+        # item must not suppress or duplicate the finding for a sibling
+        # trailer naming an id the graph doesn't recognize.
+        repo = self._repo()
+        repo.write_graph([_item("known")])
+        repo.write("README.md", "# repo\n")
+        repo.commit("init")
+        repo.record_approval()
+
+        repo.write("mixed.txt", "mixed\n")
+        repo.commit(
+            "touch two items\n\nWork-Item: known\nWork-Item: typo-id"
+        )
+
+        report = detect_work_drift(repo.path)
+        kinds = [(f.kind, f.work_item_id) for f in report.findings]
+        self.assertEqual(kinds, [(KIND_UNKNOWN_ITEM, "typo-id")])
+
     def test_no_ff_merge_folding_in_attributed_work_is_not_untracked(self) -> None:
         # This repository's own merge_policy strategy is "merge", which the
         # merger implements as `git merge --no-ff -m "Agentflow run <id>
@@ -330,13 +352,26 @@ class DetectWorkDriftTests(unittest.TestCase):
         repo.checkout(base_branch)
         repo.merge_no_ff("feature", "Agentflow run xyz merge")
 
+        merge_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo.path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
         report = detect_work_drift(repo.path)
         self.assertEqual(
             report.findings,
             (),
             f"merge commit produced spurious drift findings: {report.findings}",
         )
-
+        self.assertNotIn(
+            merge_sha,
+            report.analyzed_commits,
+            "a pure-plumbing merge commit must be excluded from "
+            "analyzed_commits entirely, not merely free of findings",
+        )
 
     def test_manual_conflict_resolution_merge_with_untracked_content_is_not_hidden(
         self,
@@ -434,6 +469,44 @@ class DriftCliTests(unittest.TestCase):
         result = run_drift(repo.path, "--strict")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["state"], "clean")
+
+    def test_runs_without_data_dir_or_home_state(self) -> None:
+        # Acceptance criterion: the command "needs no Agentflow Home state".
+        # Omitting --data-dir is not sufficient proof on its own: many
+        # commands fall back to a default Agentflow Home (e.g. via an
+        # AGENTFLOW_HOME environment variable) rather than genuinely doing
+        # without one. Point AGENTFLOW_HOME at a path that does not exist and
+        # confirm drift neither errors nor creates it.
+        repo = self._repo()
+        repo.write_graph([_item("a")])
+        repo.write("README.md", "# repo\n")
+        repo.commit("init")
+        repo.record_approval()
+        repo.write("manual.txt", "manual\n")
+        repo.commit("manual work with no trailer")
+
+        fake_home = Path(tempfile.mkdtemp()) / "should-not-be-created"
+        result = subprocess.run(
+            [sys.executable, "-m", "agentflow", "work", "drift",
+             "--repository", str(repo.path)],
+            cwd=repo.path,
+            env={
+                **os.environ,
+                "PYTHONPATH": str(PROJECT_ROOT / "src"),
+                "AGENTFLOW_HOME": str(fake_home),
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout)["state"], "drift"
+        )
+        self.assertFalse(
+            fake_home.exists(),
+            "work drift must not create Agentflow Home state",
+        )
 
     def test_command_mutates_nothing(self) -> None:
         repo = self._repo()
