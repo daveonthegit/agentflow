@@ -35,6 +35,7 @@ a hand-maintained list that drifts from reality:
 ```bash
 agentflow work list    # the whole graph, validated
 agentflow work ready   # the items actionable now (dependencies satisfied)
+agentflow work drift   # commits landed since approval that escaped the graph
 ```
 
 A slice is closed by editing its Work Item out of the graph in the same commit

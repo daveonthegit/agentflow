@@ -29,6 +29,7 @@ from .improvement import (
     list_proposals,
 )
 from .deployment import deploy_run
+from .drift import detect_work_drift
 from .merger import merge_approved_run
 from .post_merge import (
     list_recovery_proposals,
@@ -281,9 +282,25 @@ def main() -> int:
     work_parser = subcommands.add_parser("work")
     work_parser.add_argument(
         "mode",
-        choices=("list", "ready", "verify", "approve", "proposals", "ingest"),
+        choices=(
+            "list",
+            "ready",
+            "verify",
+            "drift",
+            "approve",
+            "proposals",
+            "ingest",
+        ),
     )
     work_parser.add_argument("--repository", type=Path, default=Path("."))
+    work_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "for `work drift`: exit nonzero when any drift finding exists "
+            "(default observe mode reports findings but always exits 0)"
+        ),
+    )
     work_parser.add_argument(
         "--approved-by",
         help=(
@@ -854,6 +871,43 @@ def main() -> int:
                     sort_keys=True,
                 )
             )
+            return 0
+        if args.mode == "drift":
+            # A read-only reconciliation report of work landed outside the
+            # Work Graph. Reads the Target Repository and its git history
+            # alone (no Agentflow Home state, no network) and mutates nothing.
+            # In default observe mode it always exits 0 so CI stays green;
+            # --strict exits nonzero only when blocking findings exist.
+            try:
+                report = detect_work_drift(args.repository)
+            except ContractError as error:
+                print(str(error), file=sys.stderr)
+                return 1
+            print(
+                json.dumps(
+                    {
+                        "approval_boundary": report.approval_boundary,
+                        "analyzed_commits": list(report.analyzed_commits),
+                        "findings": [
+                            {
+                                "commit": finding.commit,
+                                "kind": finding.kind,
+                                "subject": finding.subject,
+                                **(
+                                    {"work_item_id": finding.work_item_id}
+                                    if finding.work_item_id is not None
+                                    else {}
+                                ),
+                            }
+                            for finding in report.findings
+                        ],
+                        "state": "drift" if report.has_findings else "clean",
+                    },
+                    sort_keys=True,
+                )
+            )
+            if args.strict and report.has_findings:
+                return 1
             return 0
         if args.mode == "proposals":
             scanned = scan_proposals(args.repository)
