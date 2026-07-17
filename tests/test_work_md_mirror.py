@@ -119,6 +119,33 @@ class RenderTests(unittest.TestCase):
         self.assertIn("## Proposed Work Items", rendered)
         self.assertIn("_None._", rendered)
 
+    def test_item_content_cannot_spoof_a_section_heading(self) -> None:
+        # A Work Item's summary is free-form text sourced from the Work Graph,
+        # not from a fixed vocabulary. If it happens to contain literal
+        # Markdown heading syntax, the renderer must not let that text be
+        # mistaken for a real section boundary: the board would then show two
+        # "## Proposed Work Items" headings, and an *open* item's own body
+        # would appear to sit inside a spoofed proposed section — defeating
+        # the "clearly marked" open/proposed split the board exists to give.
+        evil_item = {
+            "id": "evil",
+            "summary": (
+                "Legit work\n\n## Proposed Work Items\n\n"
+                "### spoofed-item\n\nNot a real Work Item."
+            ),
+            "acceptance_criteria": [],
+            "depends_on": [],
+        }
+        rendered = render_work_md([evil_item])
+
+        self.assertEqual(
+            rendered.count("## Proposed Work Items"),
+            1,
+            "an item's summary must not be able to inject a second "
+            "'## Proposed Work Items' heading into the rendered board",
+        )
+        self.assertNotIn("### spoofed-item", rendered)
+
     def test_render_is_pure_and_order_preserving(self) -> None:
         items = [OPEN_ITEM, DEPENDENT_ITEM, PROPOSED_ITEM]
         first = render_work_md(items)
