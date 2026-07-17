@@ -36,7 +36,7 @@ from .post_merge import (
     resolve_post_merge_failure,
     verify_merged_run,
 )
-from .project_setup import initialize_repository
+from .project_setup import PolicyNotCommittableError, initialize_repository
 from .paths import agentflow_home
 from .proposals import ingest_proposals, scan_proposals
 from .repository_profile import (
@@ -93,6 +93,15 @@ def main() -> int:
     subcommands = parser.add_subparsers(dest="command", required=True)
     init_parser = subcommands.add_parser("init")
     init_parser.add_argument("repository", nargs="?", type=Path, default=Path.cwd())
+    init_parser.add_argument(
+        "--enforcement",
+        choices=["observe", "strict"],
+        default=None,
+        help=(
+            "enforcement mode recorded as committed policy; defaults to observe "
+            "on first init and otherwise preserves the repository's current mode"
+        ),
+    )
     profile_parser = subcommands.add_parser("profile")
     profile_parser.add_argument("--check", action="append", required=True)
     profile_parser.add_argument(
@@ -415,10 +424,23 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "init":
-        result = initialize_repository(args.repository)
+        try:
+            result = initialize_repository(
+                args.repository, enforcement=args.enforcement
+            )
+        except PolicyNotCommittableError as error:
+            print(str(error), file=sys.stderr)
+            return 1
         print(
             json.dumps(
-                {"repository": str(result.repository), "state": "initialized"},
+                {
+                    "repository": str(result.repository),
+                    "state": "initialized",
+                    "enforcement": result.enforcement,
+                    "policy": result.policy_relative,
+                    "hooks_installed": list(result.hooks_installed),
+                    "hooks_preserved": list(result.hooks_preserved),
+                },
                 sort_keys=True,
             )
         )
