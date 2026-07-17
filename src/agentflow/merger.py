@@ -24,7 +24,9 @@ claim:
    diverged out of band: its current head must already be part of the merge
    candidate's history, because a protected branch advances only through this
    gated merge path;
-4. the clean-environment CI gate passes: the candidate's own committed
+4. shipping for the Target Repository is not stopped by an unresolved
+   Post-Merge Verification failure (see :mod:`agentflow.post_merge`);
+5. the clean-environment CI gate passes: the candidate's own committed
    Repository Profile checks are re-run against the exact candidate SHA in a
    freshly created, isolated checkout (never the Run's Workspace, which may
    carry ignored local state), and every check must pass.
@@ -47,6 +49,7 @@ import shutil
 import subprocess
 import tempfile
 
+from .post_merge import unresolved_post_merge_failures
 from .repository_profile import MERGE_STRATEGIES, PROFILE_RELATIVE_PATH
 from .run_kernel import (
     acquire_claim,
@@ -367,6 +370,22 @@ def merge_approved_run(
                 candidate_sha=candidate_sha,
             )
 
+        # Gate 4: shipping stop. While any Run's Post-Merge Verification for
+        # this Target Repository has failed and is unresolved, every further
+        # merge is refused with evidence until a human records a resolution.
+        blocking = unresolved_post_merge_failures(
+            data_dir=data_dir, repository=repository
+        )
+        if blocking:
+            raise _refuse(
+                "shipping is blocked for this Target Repository: post-merge "
+                f"verification failed for run(s) {', '.join(blocking)} and "
+                "is unresolved",
+                approved_sha=status.approved_sha,
+                blocked_by_runs=blocking,
+                candidate_sha=candidate_sha,
+            )
+
         # Merge evidence is write-once; a second merge of the same Run is
         # already refused by the state gate, and this guards damaged logs.
         run_dir = data_dir / "runs" / run_id
@@ -374,7 +393,7 @@ def merge_approved_run(
         if artifact.exists():
             raise _refuse("merge evidence already recorded for this run")
 
-        # Gate 4: clean-environment CI — the required checks must pass for
+        # Gate 5: clean-environment CI — the required checks must pass for
         # the exact merge candidate in a freshly created, isolated checkout.
         # Each execution's evidence is an indexed write-once artifact so a
         # refused-then-retried merge never overwrites earlier CI evidence.

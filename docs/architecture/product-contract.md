@@ -133,8 +133,16 @@ Every behavior statement carries one of three classifications:
   prose findings are recorded and surfaced to the reviewer but never gate the
   workflow on their own. A run lacking declared `test_paths` fails the stage
   deterministically.
-- **Target.** A constrained Merge Agent and Post-Merge Verification. Merge
-  and deployment remain manual after approval until these exist.
+- **Implemented.** A constrained Merge Agent merges a current Approved
+  Revision only after deterministic approval and repository-policy gates, and
+  Post-Merge Verification runs the authoritative checks against the exact
+  merged commit in an isolated checkout, recording the result as Run
+  Evidence. A failure stops further shipping for the Target Repository —
+  every subsequent merge is refused with evidence — and records a
+  human-reviewed Recovery Proposal; only an attributed resolution lifts the
+  block, and Agentflow never executes a recovery itself.
+- **Target.** Deployment remains manual after approval until deployment
+  adapters exist.
 - **Target.** Reconciliation and Workspace cleanup after abandonment.
 
 ## Evidence
@@ -166,8 +174,8 @@ Every behavior statement carries one of three classifications:
   Conversation text is never approval evidence.
 - **Implemented.** Any code change after approval invalidates it; the new
   revision must pass verification and approval again.
-- **Target.** Approval-scoped merge automation: a Merge Agent may act only on
-  a current Approved Revision after deterministic policy gates.
+- **Implemented.** Approval-scoped merge automation: the Merge Agent acts only
+  on a current Approved Revision after deterministic policy gates.
 
 ## Repository Profile boundary
 

@@ -175,7 +175,13 @@ exact candidate SHA, and a constrained Merge Agent that merges a current
 Approved Revision only after deterministic approval, repository-policy, and
 protected-branch gates plus a clean-environment CI gate that re-runs the
 candidate's committed checks at the exact merge SHA in a fresh isolated
-checkout. Claude, Cursor, Codex, and deterministic fake adapters
+checkout. After a merge, `agentflow verify-merge` runs Post-Merge
+Verification: the authoritative checks against the exact merged commit in an
+isolated checkout, recorded as Run Evidence. A failure stops further shipping
+for the repository — every subsequent merge is refused with evidence — and
+records a Recovery Proposal for human review; only an attributed
+`agentflow resolve-merge` lifts the block, and Agentflow never executes a
+recovery itself. Claude, Cursor, Codex, and deterministic fake adapters
 support builder, tester, and reviewer roles; Claude and Cursor
-additionally provide live transcripts and model routing. Post-merge
-verification and deployment are later slices.
+additionally provide live transcripts and model routing. Deployment is a
+later slice.

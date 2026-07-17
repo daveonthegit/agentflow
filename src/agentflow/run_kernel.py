@@ -29,10 +29,13 @@ FOLLOW_TERMINAL_STATES = frozenset(
         "plan_rejected",
         "human_rejected",
         "merged",
+        "merge_failed",
     }
 )
 
 # Terminal rejection and approval states that must not be abandoned or mutated.
+# 'merge_failed' is here so an unresolved post-merge failure cannot be
+# abandoned away: only an attributed post_merge_resolved lifts it.
 TERMINAL_IMMUTABLE_STATES = frozenset(
     {
         "abandoned",
@@ -40,6 +43,7 @@ TERMINAL_IMMUTABLE_STATES = frozenset(
         "plan_rejected",
         "human_rejected",
         "merged",
+        "merge_failed",
     }
 )
 
@@ -300,7 +304,15 @@ STATE_BY_EVENT = {
     "human_approved": "human_approved",
     # 'merge_refused' has no entry on purpose: a recorded refusal leaves the
     # Run in its current state (usually human_approved) via the .get fallback.
+    # 'post_merge_refused' likewise stays stateless.
     "merge_completed": "merged",
+    # A verified merge stays 'merged' (still delivered); a failed post-merge
+    # verification is 'merge_failed' — not delivered, and it blocks further
+    # shipping for the repository until a human records a resolution, which
+    # returns the Run to 'merged'.
+    "post_merge_verified": "merged",
+    "post_merge_failed": "merge_failed",
+    "post_merge_resolved": "merged",
     "run_abandoned": "abandoned",
     "plan_rejected": "plan_rejected",
     "human_rejected": "human_rejected",

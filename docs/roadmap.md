@@ -40,7 +40,7 @@ agentflow work ready   # the items actionable now (dependencies satisfied)
 A slice is closed by editing its Work Item out of the graph in the same commit
 that ships it; git history is the completion record. The dependency edges in the
 graph encode the ordering that used to be prose here — for example merge and
-shipping work (`merge-agent`, `ci-gate`, `post-merge-verification`,
+shipping work (`merge-agent`, `ci-gate`,
 `deployment-adapters`) is gated behind the Merge Agent, and evidence-driven
 improvement (`adoption-gate`) behind the observability
 projection. This document keeps only the narrative; the status is the graph.
