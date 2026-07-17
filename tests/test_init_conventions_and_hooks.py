@@ -173,6 +173,39 @@ class GitHookTests(unittest.TestCase):
                     "init rewrite hooks belonging to other repositories.",
                 )
 
+    def test_relative_hooks_path_escaping_repository_is_refused(self) -> None:
+        """A ``core.hooksPath`` given as a relative ``../`` escape must also refuse.
+
+        ``git rev-parse --git-path hooks`` returns a *relative* string (not
+        resolved to an absolute path) when ``core.hooksPath`` is configured
+        relatively. Confinement must still hold once that relative path is
+        resolved against the repository root: escaping to a sibling directory
+        must be refused exactly like the absolute-path case already covered by
+        ``test_hooks_are_never_written_outside_the_target_repository``.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            outside = base / "outside-hooks"
+            outside.mkdir(parents=True, exist_ok=True)
+            repository = base / "repo"
+            _init_git_repo(repository)
+            _git(repository, "config", "core.hooksPath", "../outside-hooks")
+
+            result = _run_init(repository)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            response = json.loads(result.stdout)
+            self.assertEqual(response["hooks_installed"], [])
+            self.assertEqual(response["hooks_preserved"], [])
+
+            for name in ("pre-commit", "commit-msg"):
+                written = outside / name
+                self.assertFalse(
+                    written.exists(),
+                    f"agentflow init wrote '{written}' via a relative "
+                    "core.hooksPath escape ('../outside-hooks'), which lies "
+                    f"outside the target repository '{repository}'.",
+                )
+
     def test_foreign_hook_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = Path(temp_dir) / "repo"
@@ -301,6 +334,36 @@ class PolicyCommittabilityTests(unittest.TestCase):
                 0,
                 "applying the tool's own suggested fix verbatim did not "
                 f"resolve committability: {second.stderr}",
+            )
+
+    def test_info_exclude_ignore_form_fails_actionably(self) -> None:
+        """``.git/info/exclude`` is a valid ignore source distinct from ``.gitignore``.
+
+        It is interpreted repo-root relative (like a global excludes file),
+        not relative to the directory containing it, so the suggested fix
+        must target it directly rather than misidentifying it as a
+        ``.gitignore``-relative source.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            _init_git_repo(repository)
+            info_exclude = repository / ".git" / "info" / "exclude"
+            with info_exclude.open("a", encoding="utf-8") as handle:
+                handle.write(".agentflow/\n")
+
+            result = _run_init(repository)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn(".agentflow/policy.json", result.stderr)
+            self.assertIn("info/exclude", result.stderr)
+            self.assertFalse((repository / ".agentflow" / "policy.json").exists())
+
+            self._apply_suggested_fix(repository, result.stderr)
+            second = _run_init(repository)
+            self.assertEqual(
+                second.returncode,
+                0,
+                "applying the tool's own suggested fix for a .git/info/exclude "
+                f"rule did not resolve committability: {second.stderr}",
             )
 
     def test_negated_reinclude_is_treated_as_committable(self) -> None:
