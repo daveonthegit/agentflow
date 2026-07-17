@@ -119,6 +119,28 @@ agentflow approve <run-id> --approved-by <human identity>
 
 Do not translate ordinary conversational agreement into approval.
 
+## Merge an Approved Revision
+
+Merging requires an explicit repository policy: record it when profiling with
+`agentflow profile ... --allow-merge` (optionally `--merge-target-branch` and
+`--merge-strategy fast-forward|merge`; the target branch defaults to the
+branch checked out when the profile is created) and commit the profile. If the
+profile declares no `merge_policy`, every merge is refused.
+
+If and only if `agentflow status <run-id>` reports `human_approved` and the
+user explicitly directs the merge, run:
+
+```bash
+agentflow merge <run-id> --merged-by <human identity>
+```
+
+The Merge Agent is deterministically gated engine code: it merges only when
+the Workspace still sits clean at the exact `approved_sha` (any drift makes
+the approval stale) and the Target Repository is clean on the policy's target
+branch. Every refusal is recorded as a `merge_refused` event; a completed
+merge records a `merge_completed` event plus write-once `merge.json`
+evidence. The merger can never create or modify approval records.
+
 ## Record rejection
 
 If the user explicitly rejects a candidate, record it with the
@@ -139,6 +161,7 @@ Rejected Runs cannot advance, approve, abandon, rebase, or be rejected again.
 - Never bypass a failed or unavailable gate by editing run evidence manually.
 - Never let an agent's prose override command exit status or test results.
 - Require explicit human approval before merge.
-- Do not imply that unimplemented merge, post-merge, or deployment stages have
-  executed, and do not claim a tester ran unless Agentflow recorded a
-  `tests_ready` or `tests_failed` event.
+- Do not imply that unimplemented post-merge or deployment stages have
+  executed; do not claim a merge happened unless Agentflow recorded a
+  `merge_completed` event, and do not claim a tester ran unless Agentflow
+  recorded a `tests_ready` or `tests_failed` event.

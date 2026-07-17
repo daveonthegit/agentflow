@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .contracts import ContractError, validate_work_graph
-from .run_kernel import list_runs
+from .run_kernel import COMPLETED_RUN_STATES, list_runs
 
 WORK_RELATIVE_DIR = Path(".agentflow/work")
 DEFAULT_GRAPH_FILENAME = "graph.jsonl"
@@ -271,11 +271,14 @@ def completed_work_item_ids(data_dir: Path) -> set[str]:
     """Work-item ids a human-approved Run has already delivered.
 
     Completion is read from Run Evidence: a Work Item is done when a
-    ``human_approved`` Run captured it (its Task Spec ``source.work_item_id``
-    names the item). Nothing is written back to the Work Graph.
+    ``human_approved`` (or subsequently ``merged``) Run captured it (its Task
+    Spec ``source.work_item_id`` names the item). Nothing is written back to
+    the Work Graph.
     """
     completed: set[str] = set()
-    for run in list_runs(data_dir=data_dir, state="human_approved"):
+    for run in list_runs(data_dir=data_dir):
+        if run.state not in COMPLETED_RUN_STATES:
+            continue
         source = run.source
         if isinstance(source, dict) and source.get("work_item_id"):
             completed.add(source["work_item_id"])

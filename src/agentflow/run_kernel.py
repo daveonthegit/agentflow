@@ -28,6 +28,7 @@ FOLLOW_TERMINAL_STATES = frozenset(
         "human_approved",
         "plan_rejected",
         "human_rejected",
+        "merged",
     }
 )
 
@@ -38,8 +39,13 @@ TERMINAL_IMMUTABLE_STATES = frozenset(
         "human_approved",
         "plan_rejected",
         "human_rejected",
+        "merged",
     }
 )
+
+# Run states whose captured Work Item counts as delivered: an exact-SHA human
+# approval, whether or not the Merge Agent has shipped it yet.
+COMPLETED_RUN_STATES = frozenset({"human_approved", "merged"})
 
 # Runs that are still in flight or waiting on a human — the watch picker and
 # reconcile's "live" notion. Failed / abandoned / approved / rejected are out.
@@ -292,6 +298,9 @@ STATE_BY_EVENT = {
     "review_blocked": "changes_requested",
     "awaiting_human": "awaiting_human",
     "human_approved": "human_approved",
+    # 'merge_refused' has no entry on purpose: a recorded refusal leaves the
+    # Run in its current state (usually human_approved) via the .get fallback.
+    "merge_completed": "merged",
     "run_abandoned": "abandoned",
     "plan_rejected": "plan_rejected",
     "human_rejected": "human_rejected",
@@ -406,10 +415,13 @@ def format_watch_event(event: dict[str, Any]) -> str | None:
         "approved_sha",
         "rejected_sha",
         "new_candidate_sha",
+        "merged_sha",
         "model",
         "approved_by",
         "abandoned_by",
         "rejected_by",
+        "merged_by",
+        "refused_by",
         "reason",
     ):
         value = event.get(key)

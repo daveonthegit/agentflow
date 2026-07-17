@@ -10,6 +10,9 @@ import subprocess
 
 PROFILE_RELATIVE_PATH = Path(".agentflow/repository-profile.json")
 
+# Merge strategies a Repository Profile merge_policy may declare.
+MERGE_STRATEGIES = ("fast-forward", "merge")
+
 
 @dataclass(frozen=True)
 class CreatedProfile:
@@ -78,8 +81,46 @@ def _validated_test_paths(test_paths: list[str]) -> list[str]:
     return sorted(validated)
 
 
+def _validated_merge_policy(merge_policy: dict, repository: Path) -> dict:
+    """Normalize a declared merge policy for the profile.
+
+    ``allow`` must be an explicit boolean, ``strategy`` one of
+    ``MERGE_STRATEGIES`` (default fast-forward), and ``target_branch`` a
+    non-empty branch name, defaulting to the repository's currently
+    checked-out branch.
+    """
+    allow = merge_policy.get("allow")
+    if not isinstance(allow, bool):
+        raise ValueError("Repository Profile merge_policy.allow must be a boolean")
+    strategy = merge_policy.get("strategy", "fast-forward")
+    if strategy not in MERGE_STRATEGIES:
+        raise ValueError(
+            "Repository Profile merge_policy.strategy must be one of "
+            + ", ".join(MERGE_STRATEGIES)
+        )
+    target_branch = merge_policy.get("target_branch")
+    if target_branch is None:
+        target_branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+    if not isinstance(target_branch, str) or not target_branch:
+        raise ValueError(
+            "Repository Profile merge_policy.target_branch must be a "
+            "non-empty branch name"
+        )
+    return {"allow": allow, "strategy": strategy, "target_branch": target_branch}
+
+
 def create_repository_profile(
-    *, repository: Path, checks: list[str], test_paths: list[str] | None = None
+    *,
+    repository: Path,
+    checks: list[str],
+    test_paths: list[str] | None = None,
+    merge_policy: dict | None = None,
 ) -> CreatedProfile:
     repository = _repository_root(repository)
     files = _repository_files(repository)
@@ -100,6 +141,8 @@ def create_repository_profile(
     }
     if test_paths:
         profile["test_paths"] = _validated_test_paths(test_paths)
+    if merge_policy is not None:
+        profile["merge_policy"] = _validated_merge_policy(merge_policy, repository)
     profile_path = repository / PROFILE_RELATIVE_PATH
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     profile_path.write_text(
