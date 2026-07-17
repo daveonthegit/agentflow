@@ -643,6 +643,111 @@ def proposal_work_item_id(proposal: dict[str, Any]) -> str:
     return "proposal-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+# A reconcile disposition is a human's decision about one Work Item that landed
+# in a drift finding or a completion-claim proposal. The four dispositions are
+# the fixed recovery vocabulary: keep the item (``still_valid``), close it
+# against outside commits (``completed_externally``), keep it with amended
+# acceptance criteria (``partially_done``), or send it back through Framing
+# (``invalidated``). Nothing here is ever applied without ``confirmed`` set by a
+# human, and ``agentflow work reconcile-apply`` re-validates eligibility itself
+# rather than trusting a plan file.
+DISPOSITION_STILL_VALID = "still_valid"
+DISPOSITION_COMPLETED_EXTERNALLY = "completed_externally"
+DISPOSITION_PARTIALLY_DONE = "partially_done"
+DISPOSITION_INVALIDATED = "invalidated"
+RECONCILE_DISPOSITIONS = (
+    DISPOSITION_STILL_VALID,
+    DISPOSITION_COMPLETED_EXTERNALLY,
+    DISPOSITION_PARTIALLY_DONE,
+    DISPOSITION_INVALIDATED,
+)
+_RECONCILE_DISPOSITION_FIELDS = (
+    "work_item_id",
+    "disposition",
+    "confirmed",
+    "external_commits",
+    "amended_acceptance_criteria",
+)
+
+
+def validate_reconcile_disposition(value: Any) -> dict[str, Any]:
+    """Validate one reconcile disposition record.
+
+    A disposition names the Work Item it is about (``work_item_id``), which of
+    the four ``RECONCILE_DISPOSITIONS`` a human chose, and whether that human has
+    ``confirmed`` it — an unconfirmed record is a proposal the apply step never
+    acts on. Two payload fields are cross-checked against the disposition so a
+    record can never carry evidence that contradicts its kind:
+
+    * ``external_commits`` is a required non-empty list *only* for
+      ``completed_externally`` (the outside commits that did the work, named so
+      the completion is attributable and never fabricated) and must be absent or
+      empty for every other disposition.
+    * ``amended_acceptance_criteria`` is a required non-empty list *only* for
+      ``partially_done`` (the criteria that remain) and must be absent or empty
+      otherwise.
+
+    Unknown fields are rejected so the record stays explicit and round-trips
+    cleanly between the plan and apply commands.
+    """
+    if not isinstance(value, dict):
+        raise ContractError("reconcile disposition must be an object")
+    unknown = set(value) - set(_RECONCILE_DISPOSITION_FIELDS)
+    if unknown:
+        raise ContractError(
+            f"reconcile disposition contains unknown fields: {sorted(unknown)}"
+        )
+    work_item_id = value.get("work_item_id")
+    if not isinstance(work_item_id, str) or not work_item_id.strip():
+        raise ContractError(
+            "reconcile disposition work_item_id must be a non-empty string"
+        )
+    disposition = value.get("disposition")
+    if disposition not in RECONCILE_DISPOSITIONS:
+        raise ContractError(
+            "reconcile disposition must be one of "
+            f"{sorted(RECONCILE_DISPOSITIONS)}"
+        )
+    confirmed = value.get("confirmed")
+    if not isinstance(confirmed, bool):
+        raise ContractError("reconcile disposition confirmed must be a boolean")
+    external_commits = _validate_string_list(
+        value.get("external_commits", []), "reconcile disposition external_commits"
+    )
+    amended = _validate_string_list(
+        value.get("amended_acceptance_criteria", []),
+        "reconcile disposition amended_acceptance_criteria",
+    )
+    if disposition == DISPOSITION_COMPLETED_EXTERNALLY:
+        if not external_commits:
+            raise ContractError(
+                "a completed_externally disposition must name at least one "
+                "external commit"
+            )
+    elif external_commits:
+        raise ContractError(
+            "external_commits is only valid for a completed_externally disposition"
+        )
+    if disposition == DISPOSITION_PARTIALLY_DONE:
+        if not amended:
+            raise ContractError(
+                "a partially_done disposition must supply amended acceptance "
+                "criteria"
+            )
+    elif amended:
+        raise ContractError(
+            "amended_acceptance_criteria is only valid for a partially_done "
+            "disposition"
+        )
+    return {
+        "work_item_id": work_item_id.strip(),
+        "disposition": disposition,
+        "confirmed": confirmed,
+        "external_commits": external_commits,
+        "amended_acceptance_criteria": amended,
+    }
+
+
 def validate_review(value: Any) -> dict[str, Any]:
     required = {"disposition", "findings"}
     if (
