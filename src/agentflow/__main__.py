@@ -37,6 +37,7 @@ from .post_merge import (
 )
 from .project_setup import initialize_repository
 from .paths import agentflow_home
+from .proposals import ingest_proposals, scan_proposals
 from .repository_profile import (
     DEPLOYMENT_ADAPTERS,
     MERGE_STRATEGIES,
@@ -277,7 +278,9 @@ def main() -> int:
     run_parser.add_argument("task", type=Path)
     run_parser.add_argument("--data-dir", type=Path)
     work_parser = subcommands.add_parser("work")
-    work_parser.add_argument("mode", choices=("list", "ready", "approve"))
+    work_parser.add_argument(
+        "mode", choices=("list", "ready", "approve", "proposals", "ingest")
+    )
     work_parser.add_argument("--repository", type=Path, default=Path("."))
     work_parser.add_argument(
         "--approved-by",
@@ -823,6 +826,46 @@ def main() -> int:
                         "graph_hash": record["graph_hash"],
                         "repository": record["repository"],
                         "state": "work_graph_approved",
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.mode == "proposals":
+            scanned = scan_proposals(args.repository)
+            print(
+                json.dumps(
+                    {
+                        "valid": [
+                            {
+                                "acceptance_criteria": proposal.acceptance_criteria,
+                                "filename": proposal.filename,
+                                "kind": proposal.kind,
+                                "relates_to": proposal.relates_to,
+                                "summary": proposal.summary,
+                                "work_item_id": proposal.work_item_id,
+                            }
+                            for proposal in scanned.valid
+                        ],
+                        "invalid": scanned.invalid,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.mode == "ingest":
+            result = ingest_proposals(args.repository)
+            print(
+                json.dumps(
+                    {
+                        "applied": result.applied,
+                        "completion_claims": result.completion_claims,
+                        "invalid": result.invalid,
+                        "removed": result.removed,
+                        "skipped_duplicate": result.skipped_duplicate,
+                        "skipped_existing": result.skipped_existing,
+                        "skipped_over_cap": result.skipped_over_cap,
+                        "state": "ingested",
                     },
                     sort_keys=True,
                 )

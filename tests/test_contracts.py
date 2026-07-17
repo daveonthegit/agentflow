@@ -4,10 +4,13 @@ import unittest
 
 from agentflow.contracts import (
     MAX_DISCOVERIES_PER_OUTPUT,
+    MAX_PROPOSALS_PER_INGEST,
     ContractError,
     contract_schema,
+    proposal_work_item_id,
     validate_builder_report,
     validate_discoveries,
+    validate_proposal,
     validate_review,
     validate_task_spec,
     validate_tester_report,
@@ -328,6 +331,83 @@ class TaskSpecContractTests(unittest.TestCase):
                     },
                 }
             )
+
+
+class ProposalContractTests(unittest.TestCase):
+    def test_accepts_new_work_proposal_and_normalizes(self) -> None:
+        proposal = validate_proposal(
+            {
+                "kind": "new-work",
+                "summary": "  Add a health endpoint  ",
+                "acceptance_criteria": ["GET /health returns 200"],
+                "relates_to": ["existing-item"],
+            }
+        )
+        self.assertEqual(proposal["kind"], "new-work")
+        self.assertEqual(proposal["summary"], "Add a health endpoint")
+        self.assertEqual(proposal["acceptance_criteria"], ["GET /health returns 200"])
+        self.assertEqual(proposal["relates_to"], ["existing-item"])
+
+    def test_accepts_completion_claim_without_criteria(self) -> None:
+        proposal = validate_proposal(
+            {
+                "kind": "completion-claim",
+                "summary": "health endpoint already shipped in abc123",
+                "relates_to": ["health"],
+            }
+        )
+        self.assertEqual(proposal["kind"], "completion-claim")
+        self.assertEqual(proposal["acceptance_criteria"], [])
+        self.assertEqual(proposal["relates_to"], ["health"])
+
+    def test_rejects_unknown_kind(self) -> None:
+        with self.assertRaisesRegex(ContractError, "kind"):
+            validate_proposal({"kind": "bug", "summary": "x"})
+
+    def test_rejects_unknown_field(self) -> None:
+        with self.assertRaisesRegex(ContractError, "unknown fields"):
+            validate_proposal(
+                {"kind": "completion-claim", "summary": "x", "priority": "high"}
+            )
+
+    def test_rejects_missing_summary(self) -> None:
+        with self.assertRaisesRegex(ContractError, "summary"):
+            validate_proposal({"kind": "new-work", "acceptance_criteria": ["a"]})
+
+    def test_new_work_requires_acceptance_criteria(self) -> None:
+        with self.assertRaisesRegex(ContractError, "acceptance criterion"):
+            validate_proposal({"kind": "new-work", "summary": "x"})
+
+    def test_new_work_rejects_empty_acceptance_criteria(self) -> None:
+        with self.assertRaisesRegex(ContractError, "acceptance criterion"):
+            validate_proposal(
+                {"kind": "new-work", "summary": "x", "acceptance_criteria": []}
+            )
+
+    def test_content_derived_id_is_stable_and_kind_summary_sensitive(self) -> None:
+        first = validate_proposal(
+            {"kind": "new-work", "summary": "same", "acceptance_criteria": ["a"]}
+        )
+        second = validate_proposal(
+            {
+                "kind": "new-work",
+                "summary": "same",
+                "acceptance_criteria": ["different criterion"],
+            }
+        )
+        # Same kind+summary -> same id even when other fields differ.
+        self.assertEqual(
+            proposal_work_item_id(first), proposal_work_item_id(second)
+        )
+        other = validate_proposal(
+            {"kind": "new-work", "summary": "changed", "acceptance_criteria": ["a"]}
+        )
+        self.assertNotEqual(
+            proposal_work_item_id(first), proposal_work_item_id(other)
+        )
+
+    def test_ingest_cap_mirrors_discoveries_cap(self) -> None:
+        self.assertEqual(MAX_PROPOSALS_PER_INGEST, MAX_DISCOVERIES_PER_OUTPUT)
 
 
 if __name__ == "__main__":
