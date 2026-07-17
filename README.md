@@ -183,5 +183,16 @@ records a Recovery Proposal for human review; only an attributed
 `agentflow resolve-merge` lifts the block, and Agentflow never executes a
 recovery itself. Claude, Cursor, Codex, and deterministic fake adapters
 support builder, tester, and reviewer roles; Claude and Cursor
-additionally provide live transcripts and model routing. Deployment is a
-later slice.
+additionally provide live transcripts and model routing.
+
+After a passing Post-Merge Verification, `agentflow deploy` ships the exact
+verified `merged_sha` through a Deployment Adapter declared in the Repository
+Profile (`agentflow profile ... --deploy-adapter directory|command` plus its
+config; absent configuration refuses deployment by default). Deterministic
+gates require write-once merge evidence, passing post-merge verification of
+that exact commit, and no unresolved shipping stop; the adapter receives the
+revision identity and an isolated checkout of exactly that commit — never a
+Run Workspace or the primary checkout. Every refusal is a recorded
+`deployment_refused` event; a completed deployment records
+`deployment_completed` plus write-once `deployment.json` evidence, and neither
+event changes the Run's workflow state or approval authority.

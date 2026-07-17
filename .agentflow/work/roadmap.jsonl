@@ -1,1 +1,0 @@
-{"acceptance_criteria": ["A deployment adapter ships an approved, post-merge-verified revision behind the adapter boundary", "Deployment changes no workflow state semantics or approval authority"], "depends_on": [], "id": "deployment-adapters", "summary": "Deployment adapters after merge safety is demonstrated"}

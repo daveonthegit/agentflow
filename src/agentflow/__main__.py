@@ -28,6 +28,7 @@ from .improvement import (
     generate_proposals,
     list_proposals,
 )
+from .deployment import deploy_run
 from .merger import merge_approved_run
 from .post_merge import (
     list_recovery_proposals,
@@ -36,7 +37,11 @@ from .post_merge import (
 )
 from .project_setup import initialize_repository
 from .paths import agentflow_home
-from .repository_profile import MERGE_STRATEGIES, create_repository_profile
+from .repository_profile import (
+    DEPLOYMENT_ADAPTERS,
+    MERGE_STRATEGIES,
+    create_repository_profile,
+)
 from .work_graph import (
     approve_work_graph,
     compute_ready_work,
@@ -119,6 +124,30 @@ def main() -> int:
             "branch has diverged out of band"
         ),
     )
+    profile_parser.add_argument(
+        "--deploy-adapter",
+        choices=DEPLOYMENT_ADAPTERS,
+        help=(
+            "record a deployment configuration naming the Deployment Adapter "
+            "`agentflow deploy` may ship a verified revision through; absent "
+            "configuration refuses deployment by default"
+        ),
+    )
+    profile_parser.add_argument(
+        "--deploy-target",
+        help=(
+            "directory adapter: path the verified revision's content is "
+            "published to (relative paths resolve against the repository; "
+            "the target must lie outside it)"
+        ),
+    )
+    profile_parser.add_argument(
+        "--deploy-command",
+        help=(
+            "command adapter: deploy command run inside an isolated checkout "
+            "of the exact verified revision"
+        ),
+    )
     start_parser = subcommands.add_parser("start")
     start_parser.add_argument("summary", nargs="?")
     start_parser.add_argument(
@@ -181,6 +210,17 @@ def main() -> int:
     verify_merge_parser.add_argument("run_id")
     verify_merge_parser.add_argument("--verified-by", required=True)
     verify_merge_parser.add_argument("--data-dir", type=Path)
+    deploy_parser = subcommands.add_parser(
+        "deploy",
+        help=(
+            "ship a merged, post-merge-verified revision through the "
+            "Repository Profile's Deployment Adapter; deterministic gates "
+            "refuse everything else and every refusal is recorded as evidence"
+        ),
+    )
+    deploy_parser.add_argument("run_id")
+    deploy_parser.add_argument("--deployed-by", required=True)
+    deploy_parser.add_argument("--data-dir", type=Path)
     resolve_merge_parser = subcommands.add_parser(
         "resolve-merge",
         help=(
@@ -376,11 +416,44 @@ def main() -> int:
             parser.error("--merge-target-branch requires --allow-merge")
         elif args.merge_protected:
             parser.error("--merge-protected requires --allow-merge")
+        deployment = None
+        if args.deploy_adapter is not None:
+            if args.deploy_adapter == "directory":
+                if args.deploy_target is None:
+                    parser.error(
+                        "--deploy-adapter directory requires --deploy-target"
+                    )
+                if args.deploy_command is not None:
+                    parser.error(
+                        "--deploy-command requires --deploy-adapter command"
+                    )
+                deployment = {
+                    "adapter": "directory",
+                    "config": {"target": args.deploy_target},
+                }
+            else:
+                if args.deploy_command is None:
+                    parser.error(
+                        "--deploy-adapter command requires --deploy-command"
+                    )
+                if args.deploy_target is not None:
+                    parser.error(
+                        "--deploy-target requires --deploy-adapter directory"
+                    )
+                deployment = {
+                    "adapter": "command",
+                    "config": {"command": args.deploy_command},
+                }
+        elif args.deploy_target is not None or args.deploy_command is not None:
+            parser.error(
+                "--deploy-target/--deploy-command require --deploy-adapter"
+            )
         result = create_repository_profile(
             repository=Path.cwd(),
             checks=args.check,
             test_paths=args.test_paths,
             merge_policy=merge_policy,
+            deployment=deployment,
         )
         print(
             json.dumps(
@@ -602,6 +675,28 @@ def main() -> int:
         if verification.recovery_proposal_id is not None:
             response["recovery_proposal_id"] = verification.recovery_proposal_id
         print(json.dumps(response, sort_keys=True))
+        return 0
+
+    if args.command == "deploy":
+        deployed = deploy_run(
+            run_id=args.run_id,
+            deployed_by=args.deployed_by,
+            data_dir=agentflow_home(args.data_dir),
+        )
+        print(
+            json.dumps(
+                {
+                    "adapter": deployed.adapter,
+                    "artifact": str(deployed.artifact),
+                    "attempt_artifact": str(deployed.attempt_artifact),
+                    "deployed_by": deployed.deployed_by,
+                    "merged_sha": deployed.merged_sha,
+                    "run_id": deployed.run_id,
+                    "state": deployed.state,
+                },
+                sort_keys=True,
+            )
+        )
         return 0
 
     if args.command == "resolve-merge":

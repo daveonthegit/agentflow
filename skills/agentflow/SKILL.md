@@ -149,6 +149,35 @@ artifact. Every refusal is recorded as a `merge_refused` event; a completed
 merge records a `merge_completed` event plus write-once `merge.json`
 evidence. The merger can never create or modify approval records.
 
+## Deploy a verified revision
+
+Deployment requires explicit repository configuration: record it when
+profiling with `agentflow profile ... --deploy-adapter directory
+--deploy-target <path>` (publish the verified revision's content to a
+directory outside the repository) or `--deploy-adapter command
+--deploy-command <cmd>` (run a deploy command in an isolated checkout of the
+verified revision), and commit the profile. If the profile declares no
+deployment configuration, every deployment is refused.
+
+If and only if the Run is `merged`, `agentflow verify-merge` recorded a
+passing Post-Merge Verification for the exact merged commit, and the user
+explicitly directs the deployment, run:
+
+```bash
+agentflow deploy <run-id> --deployed-by <human identity>
+```
+
+The gates are deterministic engine code: deployment refuses without write-once
+merge evidence, without passing post-merge verification of the exact
+`merged_sha`, while any unresolved shipping stop exists for the repository, or
+without deployment configuration. The adapter receives the revision identity
+and an isolated checkout of exactly the merged commit — never a Run Workspace
+or the primary checkout. Every refusal is recorded as a `deployment_refused`
+event; a completed deployment records a `deployment_completed` event plus
+write-once `deployment.json` evidence. Deployment never changes the Run's
+workflow state and can never create or modify approval, merge, or
+verification records.
+
 ## Record rejection
 
 If the user explicitly rejects a candidate, record it with the

@@ -91,6 +91,18 @@ class WorkGraphBackendTests(unittest.TestCase):
             graph_path = repository / ".agentflow" / "work" / "graph.jsonl"
             self.assertTrue(graph_path.is_file())
 
+    def test_empty_jsonl_file_is_an_empty_graph_with_no_ready_work(self) -> None:
+        # A fully delivered roadmap leaves an empty JSONL file behind: loading
+        # it is an empty graph, and ready-work computation stays an empty list.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            work_dir = repository / ".agentflow" / "work"
+            work_dir.mkdir(parents=True)
+            (work_dir / "roadmap.jsonl").write_text("", encoding="utf-8")
+            graph = load_work_graph(repository)
+            self.assertEqual(graph, [])
+            self.assertEqual(compute_ready_work(graph, set()), [])
+
     def test_swapping_backend_preserves_validation(self) -> None:
         invalid = [_item("a", ["ghost"])]
         memory = InMemoryWorkGraphBackend()
