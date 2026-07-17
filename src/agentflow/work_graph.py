@@ -16,12 +16,18 @@ module.
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
 from typing import Protocol
 
-from .contracts import ContractError, validate_work_graph
+from .contracts import (
+    ContractError,
+    WORK_ITEM_STATUS_PROPOSED,
+    validate_discoveries,
+    validate_work_graph,
+)
 from .run_kernel import list_runs
 
 WORK_RELATIVE_DIR = Path(".agentflow/work")
@@ -163,6 +169,105 @@ def save_work_graph(
     return validated
 
 
+@dataclass(frozen=True)
+class AppliedDiscoveries:
+    """Deterministic result of applying validated Discoveries to a Work Graph.
+
+    ``applied`` lists the keys appended as proposed Work Items, in Discovery
+    order. ``skipped_existing`` lists keys dropped because a Work Item with
+    that id already exists. ``skipped_unresolved`` lists keys dropped because
+    a dependency resolves to neither an existing Work Item nor an applied
+    Discovery. ``graph`` is the validated Work Graph after application.
+    """
+
+    applied: list[str]
+    skipped_existing: list[str]
+    skipped_unresolved: list[str]
+    graph: list[dict]
+
+
+def apply_discoveries(
+    discoveries: list[dict],
+    repository: Path | None = None,
+    *,
+    backend: WorkGraphBackend | None = None,
+) -> AppliedDiscoveries:
+    """Apply role-output Discoveries to the Work Graph, deterministically.
+
+    This is the only path by which Discoveries reach ``.agentflow/work/``:
+    engine code validates the Discoveries (cap and per-output dedup keys),
+    dedups against existing Work Item ids by dropping duplicates, and appends
+    the remainder as ``proposed`` Work Items through ``save_work_graph`` so the
+    whole graph is re-validated before anything persists. Agents never write
+    the store directly. Re-applying the same Discoveries is a no-op, because
+    every key then already exists in the graph.
+
+    A Discovery may depend on existing Work Items or on other Discoveries in
+    the same output. A Discovery whose dependencies never resolve (including
+    dependency cycles within the output) is dropped deterministically and
+    reported in ``skipped_unresolved``; nothing is written for it.
+    """
+    validated = validate_discoveries(discoveries)
+    store = backend if backend is not None else default_work_graph_backend(
+        repository if repository is not None else Path.cwd()
+    )
+    graph = validate_work_graph(store.read_items())
+    existing_ids = {item["id"] for item in graph}
+    skipped_existing = [
+        discovery["key"] for discovery in validated
+        if discovery["key"] in existing_ids
+    ]
+    pending = [
+        discovery for discovery in validated
+        if discovery["key"] not in existing_ids
+    ]
+    admitted: list[dict] = []
+    admitted_keys: set[str] = set()
+    # Fixpoint admission: a Discovery enters once all its dependencies resolve
+    # to an existing id or an already-admitted key. Cycles within the output
+    # never resolve, so they are dropped rather than persisted.
+    progressed = True
+    while progressed:
+        progressed = False
+        unresolved: list[dict] = []
+        for discovery in pending:
+            if all(
+                dep in existing_ids or dep in admitted_keys
+                for dep in discovery["depends_on"]
+            ):
+                admitted.append(discovery)
+                admitted_keys.add(discovery["key"])
+                progressed = True
+            else:
+                unresolved.append(discovery)
+        pending = unresolved
+    skipped_unresolved = [discovery["key"] for discovery in pending]
+    if not admitted:
+        return AppliedDiscoveries(
+            applied=[],
+            skipped_existing=skipped_existing,
+            skipped_unresolved=skipped_unresolved,
+            graph=graph,
+        )
+    proposals = [
+        {
+            "id": discovery["key"],
+            "summary": discovery["summary"],
+            "acceptance_criteria": discovery["acceptance_criteria"],
+            "depends_on": discovery["depends_on"],
+            "status": WORK_ITEM_STATUS_PROPOSED,
+        }
+        for discovery in admitted
+    ]
+    updated = save_work_graph(graph + proposals, backend=store)
+    return AppliedDiscoveries(
+        applied=[discovery["key"] for discovery in admitted],
+        skipped_existing=skipped_existing,
+        skipped_unresolved=skipped_unresolved,
+        graph=updated,
+    )
+
+
 def completed_work_item_ids(data_dir: Path) -> set[str]:
     """Work-item ids a human-approved Run has already delivered.
 
@@ -185,10 +290,14 @@ def compute_ready_work(
 
     Deterministic: the result preserves the graph's order. Ready work is derived
     on demand from the dependency relationships and the completion set; it is
-    never stored.
+    never stored. Items still marked ``proposed`` (appended from Discoveries but
+    not yet human-approved) are excluded: a proposal becomes ready work only
+    after a human removes the marker in a Framing decision.
     """
     ready: list[dict] = []
     for item in graph:
+        if item.get("status") == WORK_ITEM_STATUS_PROPOSED:
+            continue
         if item["id"] in completed_ids:
             continue
         if all(dep in completed_ids for dep in item["depends_on"]):

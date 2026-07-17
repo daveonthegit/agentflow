@@ -99,7 +99,8 @@ def validate_task_spec(value: Any) -> dict[str, Any]:
     return task
 
 
-_WORK_ITEM_FIELDS = ("id", "summary", "acceptance_criteria", "depends_on")
+_WORK_ITEM_FIELDS = ("id", "summary", "acceptance_criteria", "depends_on", "status")
+WORK_ITEM_STATUS_PROPOSED = "proposed"
 
 
 def _validate_string_list(value: Any, label: str) -> list[str]:
@@ -127,6 +128,11 @@ def validate_work_item(value: Any) -> dict[str, Any]:
     Graph. ``depends_on`` lists the ids of Work Items that must complete first;
     ready work is computed from these relationships rather than stored. Unknown
     fields are rejected so the schema stays explicit and versionable.
+
+    ``status`` is optional and, when present, may only be ``"proposed"``: the
+    marker for an item appended from a validated Discovery that has not passed
+    human Framing approval. An absent ``status`` means the item belongs to the
+    approved graph.
     """
     if not isinstance(value, dict):
         raise ContractError("work item must be an object")
@@ -147,12 +153,19 @@ def validate_work_item(value: Any) -> dict[str, Any]:
     item_id = value["id"].strip()
     if item_id in depends_on:
         raise ContractError(f"work item {item_id} cannot depend on itself")
-    return {
+    item: dict[str, Any] = {
         "id": item_id,
         "summary": value["summary"].strip(),
         "acceptance_criteria": criteria,
         "depends_on": depends_on,
     }
+    if "status" in value:
+        if value["status"] != WORK_ITEM_STATUS_PROPOSED:
+            raise ContractError(
+                f"work item status may only be '{WORK_ITEM_STATUS_PROPOSED}'"
+            )
+        item["status"] = WORK_ITEM_STATUS_PROPOSED
+    return item
 
 
 def validate_work_graph(items: Any) -> list[dict[str, Any]]:
@@ -196,6 +209,98 @@ def _reject_dependency_cycles(items: list[dict[str, Any]]) -> None:
             visit(item_id)
 
 
+# Hard cap on Discoveries per validated role output. Enforced here in
+# deterministic validation, never left to adapters or models.
+MAX_DISCOVERIES_PER_OUTPUT = 10
+
+_DISCOVERY_FIELDS = ("key", "summary", "acceptance_criteria", "depends_on")
+
+
+def validate_discovery(value: Any) -> dict[str, Any]:
+    """Validate one Discovery.
+
+    A Discovery is a structured finding returned by an Agent Role as part of
+    its validated output contract. ``key`` is the dedup key and becomes the
+    proposed Work Item id when the engine applies the Discovery to the Work
+    Graph. Unknown fields are rejected so the schema stays explicit.
+    """
+    if not isinstance(value, dict):
+        raise ContractError("discovery must be an object")
+    unknown = set(value) - set(_DISCOVERY_FIELDS)
+    if unknown:
+        raise ContractError(f"discovery contains unknown fields: {sorted(unknown)}")
+    for field in ("key", "summary"):
+        if field not in value:
+            raise ContractError(f"discovery {field} is required")
+        if not isinstance(value[field], str) or not value[field].strip():
+            raise ContractError(f"discovery {field} must be a non-empty string")
+    criteria = _validate_string_list(
+        value.get("acceptance_criteria", []), "discovery acceptance_criteria"
+    )
+    depends_on = _validate_string_list(
+        value.get("depends_on", []), "discovery depends_on"
+    )
+    key = value["key"].strip()
+    if key in depends_on:
+        raise ContractError(f"discovery {key} cannot depend on itself")
+    return {
+        "key": key,
+        "summary": value["summary"].strip(),
+        "acceptance_criteria": criteria,
+        "depends_on": depends_on,
+    }
+
+
+def validate_discoveries(value: Any) -> list[dict[str, Any]]:
+    """Validate a role output's Discoveries list: capped and dedup-keyed.
+
+    At most ``MAX_DISCOVERIES_PER_OUTPUT`` Discoveries per output, and every
+    ``key`` must be unique within the output. Both limits are deterministic
+    validation errors, not silent truncation.
+    """
+    if not isinstance(value, list):
+        raise ContractError("discoveries must be a list")
+    if len(value) > MAX_DISCOVERIES_PER_OUTPUT:
+        raise ContractError(
+            f"discoveries must contain at most {MAX_DISCOVERIES_PER_OUTPUT} "
+            f"entries, got {len(value)}"
+        )
+    validated = [validate_discovery(item) for item in value]
+    keys = [item["key"] for item in validated]
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicates:
+        raise ContractError(f"discoveries have duplicate keys: {duplicates}")
+    return validated
+
+
+def _discoveries_schema() -> dict[str, Any]:
+    return {
+        "description": (
+            "Optional structured findings proposing future Work Items. "
+            f"At most {MAX_DISCOVERIES_PER_OUTPUT} per output, each with a "
+            "unique key. Discoveries are applied to the Work Graph only by "
+            "deterministic engine validation; never write .agentflow/work/ "
+            "files directly."
+        ),
+        "items": {
+            "additionalProperties": False,
+            "properties": {
+                "acceptance_criteria": {
+                    "items": {"type": "string"},
+                    "type": "array",
+                },
+                "depends_on": {"items": {"type": "string"}, "type": "array"},
+                "key": {"type": "string"},
+                "summary": {"type": "string"},
+            },
+            "required": ["key", "summary"],
+            "type": "object",
+        },
+        "maxItems": MAX_DISCOVERIES_PER_OUTPUT,
+        "type": "array",
+    }
+
+
 def contract_schema(role: str) -> dict[str, Any]:
     if role == "builder":
         fields = {
@@ -218,16 +323,19 @@ def contract_schema(role: str) -> dict[str, Any]:
                 "a non-empty list fails the stage."
             ),
         }
+        required = list(fields)
+        fields["discoveries"] = _discoveries_schema()
         return {
             "additionalProperties": False,
             "properties": fields,
-            "required": list(fields),
+            "required": required,
             "type": "object",
         }
     if role == "reviewer":
         return {
             "additionalProperties": False,
             "properties": {
+                "discoveries": _discoveries_schema(),
                 "disposition": {
                     "enum": ["approve", "changes_requested"],
                     "type": "string",
@@ -256,6 +364,7 @@ def contract_schema(role: str) -> dict[str, Any]:
         return {
             "additionalProperties": False,
             "properties": {
+                "discoveries": _discoveries_schema(),
                 "summary": {"type": "string"},
                 "files_changed": {"items": {"type": "string"}, "type": "array"},
                 "findings": {
@@ -290,15 +399,18 @@ def validate_builder_report(value: Any) -> dict[str, Any]:
         "steps_completed",
         "unresolved_issues",
     }
-    if set(value) != required:
+    if set(value) - required - {"discoveries"} or required - set(value):
         raise ContractError(
-            f"builder report fields must be exactly {sorted(required)}"
+            f"builder report fields must be exactly {sorted(required)} "
+            "plus optional discoveries"
         )
     for field in required:
         if not isinstance(value[field], list) or not all(
             isinstance(item, str) for item in value[field]
         ):
             raise ContractError(f"builder report {field} must be a list of strings")
+    if "discoveries" in value:
+        return {**value, "discoveries": validate_discoveries(value["discoveries"])}
     return value
 
 
@@ -310,13 +422,15 @@ def validate_tester_report(value: Any) -> dict[str, Any]:
     (run by the authoritative checks) change Run State. ``file`` may be null for
     a global finding, consistent with the reviewer contract.
     """
-    if not isinstance(value, dict) or set(value) != {
-        "summary",
-        "files_changed",
-        "findings",
-    }:
+    required = {"summary", "files_changed", "findings"}
+    if (
+        not isinstance(value, dict)
+        or set(value) - required - {"discoveries"}
+        or required - set(value)
+    ):
         raise ContractError(
-            "tester report must contain summary, files_changed, findings"
+            "tester report must contain summary, files_changed, findings "
+            "and optionally discoveries"
         )
     if not isinstance(value["summary"], str) or not value["summary"].strip():
         raise ContractError("tester report summary must be a non-empty string")
@@ -339,12 +453,22 @@ def validate_tester_report(value: Any) -> dict[str, Any]:
             raise ContractError("tester finding message must be non-empty")
         if finding["file"] is not None and not isinstance(finding["file"], str):
             raise ContractError("tester finding file must be a path or null")
+    if "discoveries" in value:
+        return {**value, "discoveries": validate_discoveries(value["discoveries"])}
     return value
 
 
 def validate_review(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != {"disposition", "findings"}:
-        raise ContractError("review must contain disposition and findings")
+    required = {"disposition", "findings"}
+    if (
+        not isinstance(value, dict)
+        or set(value) - required - {"discoveries"}
+        or required - set(value)
+    ):
+        raise ContractError(
+            "review must contain disposition and findings "
+            "and optionally discoveries"
+        )
     if value["disposition"] not in {"approve", "changes_requested"}:
         raise ContractError("review disposition is invalid")
     if not isinstance(value["findings"], list):
@@ -362,4 +486,6 @@ def validate_review(value: Any) -> dict[str, Any]:
             raise ContractError("review finding message must be non-empty")
         if finding["file"] is not None and not isinstance(finding["file"], str):
             raise ContractError("review finding file must be a path or null")
+    if "discoveries" in value:
+        return {**value, "discoveries": validate_discoveries(value["discoveries"])}
     return value
