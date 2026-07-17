@@ -146,6 +146,81 @@ class RenderTests(unittest.TestCase):
         )
         self.assertNotIn("### spoofed-item", rendered)
 
+    def test_item_id_cannot_spoof_a_section_heading(self) -> None:
+        # A Work Item's id is just as attacker-controlled as its summary: a
+        # Discovery/proposal's ``key`` becomes the item id verbatim (only
+        # trimmed, per validate_discovery/validate_work_item — no character
+        # restriction), and _render_item interpolates it into "### {id}"
+        # unescaped. An id containing literal heading syntax must not be able
+        # to inject a second "## Proposed Work Items" heading and make an
+        # *open* item's body appear to sit inside the proposed section — the
+        # same integrity guarantee already demanded of summary text.
+        evil_item = {
+            "id": "evil\n\n## Proposed Work Items\n\n### spoofed-item",
+            "summary": "Legit work",
+            "acceptance_criteria": [],
+            "depends_on": [],
+        }
+        rendered = render_work_md([evil_item])
+
+        self.assertEqual(
+            rendered.count("## Proposed Work Items"),
+            1,
+            "a Work Item id must not be able to inject a second "
+            "'## Proposed Work Items' heading into the rendered board",
+        )
+        self.assertNotIn("### spoofed-item", rendered)
+
+    def test_depends_on_entry_cannot_spoof_a_section_heading(self) -> None:
+        # depends_on ids are rendered verbatim via "Depends on: " + join(...),
+        # with no escaping. An id is only required to be a non-empty string
+        # (validate_work_item strips it but imposes no character
+        # restriction), so a dependency id containing heading syntax can
+        # inject the same spoofed structure as a malicious id or summary.
+        target = {
+            "id": "evil-dep\n\n## Proposed Work Items\n\n### spoofed-item",
+            "summary": "Depended-on item",
+            "acceptance_criteria": [],
+            "depends_on": [],
+        }
+        dependent = {
+            "id": "dependent",
+            "summary": "Depends on the evil id",
+            "acceptance_criteria": [],
+            "depends_on": [target["id"]],
+        }
+        rendered = render_work_md([target, dependent])
+
+        self.assertEqual(
+            rendered.count("## Proposed Work Items"),
+            1,
+            "a depends_on entry must not be able to inject a second "
+            "'## Proposed Work Items' heading into the rendered board",
+        )
+        self.assertNotIn("### spoofed-item", rendered)
+
+    def test_file_scope_entry_cannot_spoof_a_section_heading(self) -> None:
+        # File scope globs are rendered verbatim via "File scope: " +
+        # join(...). _validate_file_scopes only rejects absolute paths and
+        # ".." segments; it does not forbid "#" or newlines, so a glob
+        # pattern can carry the same heading-injection payload.
+        evil_item = {
+            "id": "has-files",
+            "summary": "Item with a file scope",
+            "acceptance_criteria": [],
+            "depends_on": [],
+            "files": ["src/real.py\n\n## Proposed Work Items\n\n### spoofed-item"],
+        }
+        rendered = render_work_md([evil_item])
+
+        self.assertEqual(
+            rendered.count("## Proposed Work Items"),
+            1,
+            "a file scope entry must not be able to inject a second "
+            "'## Proposed Work Items' heading into the rendered board",
+        )
+        self.assertNotIn("### spoofed-item", rendered)
+
     def test_render_is_pure_and_order_preserving(self) -> None:
         items = [OPEN_ITEM, DEPENDENT_ITEM, PROPOSED_ITEM]
         first = render_work_md(items)
