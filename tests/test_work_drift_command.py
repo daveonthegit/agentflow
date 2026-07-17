@@ -338,6 +338,55 @@ class DetectWorkDriftTests(unittest.TestCase):
         )
 
 
+    def test_manual_conflict_resolution_merge_with_untracked_content_is_not_hidden(
+        self,
+    ) -> None:
+        # A *human* merge that hits a real conflict and is resolved manually
+        # is still a merge commit (two parents), but unlike the plumbing
+        # merge the "merge" strategy produces, its content can diverge from
+        # *both* parents — the resolution itself is new, unattributed work.
+        # `git show --name-only` on such a commit is NOT empty (unlike a
+        # clean --no-ff fast plumbing merge), so this is real, visible,
+        # scoped work with no Work-Item trailer. Blanket `--no-merges`
+        # exclusion drops it from analysis entirely, hiding genuine drift.
+        repo = self._repo()
+        repo.write_graph([_item("scoped", files=["src/scoped/**"])])
+        repo.write("src/scoped/f.txt", "base\n")
+        repo.commit("init")
+        repo.record_approval()
+
+        base_branch = repo.current_branch()
+        repo.checkout_new_branch("feature")
+        repo.write("src/scoped/f.txt", "feature change\n")
+        repo.commit("feature work\n\nWork-Item: scoped")
+        repo.checkout(base_branch)
+        repo.write("src/scoped/f.txt", "main change\n")
+        repo.commit("main work\n\nWork-Item: scoped")
+        subprocess.run(
+            ["git", "merge", "--no-ff", "feature", "-m", "merge feature"],
+            cwd=repo.path,
+            capture_output=True,
+        )
+        # Manually resolve the conflict with content that matches neither
+        # parent: unattributed work landed via the resolution itself.
+        repo.write("src/scoped/f.txt", "manual resolve with extra change\n")
+        repo._run("git", "add", "-A")
+        resolve_sha = repo.commit("resolve conflict")
+
+        report = detect_work_drift(repo.path)
+        self.assertIn(
+            resolve_sha,
+            report.analyzed_commits,
+            "manual conflict-resolution merge must be analyzed, not silently "
+            "excluded like a clean plumbing merge",
+        )
+        self.assertTrue(
+            report.has_findings,
+            "unattributed manual merge-conflict resolution touching an open "
+            "item's scope must surface as drift",
+        )
+
+
 class DriftCliTests(unittest.TestCase):
     def _repo(self) -> _Repo:
         tmp = tempfile.mkdtemp()
