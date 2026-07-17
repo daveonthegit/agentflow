@@ -390,7 +390,8 @@ _INDEX_HTML = r"""<!doctype html>
   .runcard.selected { background: var(--accent-tint); }
   .runcard .row { display: flex; align-items: center; gap: 8px; }
   .runcard .rid { font: 400 11px var(--mono); color: var(--text-faint); margin-left: auto; }
-  .runcard .sum { font: 500 13px/1.3 var(--font); color: var(--text-muted); }
+  .runcard .sum { font: 500 13px/1.3 var(--font); color: var(--text-muted);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .runcard.selected .sum { color: var(--text); }
   .pips { display: flex; gap: 3px; }
   .pip { flex: 1; height: 4px; border-radius: 2px; background: var(--border-strong); }
@@ -402,7 +403,10 @@ _INDEX_HTML = r"""<!doctype html>
 
   .detail { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .detail-head { padding: 15px 20px; border-bottom: 1px solid var(--glass-divider); display: flex; align-items: flex-start; gap: 12px; flex: none; }
-  .detail-head .t { font: 500 18px/1.2 var(--font); letter-spacing: -.01em; }
+  .detail-head .t { font: 500 18px/1.2 var(--font); letter-spacing: -.01em; cursor: pointer;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .detail-head .t.expanded { -webkit-line-clamp: unset; max-height: 40vh; overflow: auto;
+    font: 400 13px/1.5 var(--font); letter-spacing: 0; }
   .detail-head .m { font: 400 12px var(--mono); color: var(--text-faint); margin-top: 4px; }
   .status-chip { display: inline-flex; align-items: center; gap: 7px; padding: 7px 13px; border-radius: 8px; font: 500 13px var(--font); flex: none; white-space: nowrap; }
   .gate-strip { display: none; padding: 11px 20px; border-bottom: 1px solid var(--glass-divider); background: var(--accent-tint); align-items: center; gap: 12px; flex: none; flex-wrap: wrap; }
@@ -463,7 +467,8 @@ _INDEX_HTML = r"""<!doctype html>
   .wcard .row { display: flex; align-items: center; gap: 8px; }
   .wcard .row .badge { margin-left: auto; }
   .wid { font: 500 11px var(--mono); color: var(--accent); background: var(--accent-tint); padding: 1px 7px; border-radius: 5px; }
-  .wcard .sum { font: 500 14px/1.3 var(--font); }
+  .wcard .sum { font: 500 14px/1.3 var(--font);
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .deps { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font: 400 11px var(--font); color: var(--text-faint); }
   .dep { font: 500 11px var(--mono); color: var(--text-muted); background: var(--hover); padding: 1px 6px; border-radius: 5px; }
   .dep.sat { color: var(--success); background: var(--success-subtle); }
@@ -479,7 +484,9 @@ _INDEX_HTML = r"""<!doctype html>
   .ev-body { flex: 1; overflow: auto; padding: 22px 24px; }
   .ev-inner { max-width: 1080px; display: flex; flex-direction: column; gap: 20px; }
   .ev-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-  .ev-title .t { font: 500 18px var(--font); letter-spacing: -.01em; }
+  .ev-title .t { font: 500 18px/1.3 var(--font); letter-spacing: -.01em; cursor: pointer; min-width: 0;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ev-title .t.expanded { -webkit-line-clamp: unset; font: 400 13px/1.5 var(--font); letter-spacing: 0; }
   .ev-title .id { font: 400 12px var(--mono); color: var(--text-faint); }
   .ev-title .ro { margin-left: auto; font: 400 12px var(--font); color: var(--text-faint); }
   .meta-card { border-radius: 10px; overflow: hidden; }
@@ -582,6 +589,8 @@ const S = {
   query: "",
   es: null,
   esRun: null,
+  evExpanded: false,
+  evExpandedFor: null,
 };
 if (!["runs", "work", "evidence"].includes(S.view)) S.view = "runs";
 
@@ -869,7 +878,9 @@ function renderRunList() {
     row.appendChild(el("span", "badge " + badge.cls, badge.label));
     row.appendChild(el("span", "rid", run.short_id));
     card.appendChild(row);
-    card.appendChild(el("div", "sum", run.summary || "(no summary)"));
+    const sum = el("div", "sum", run.summary || "(no summary)");
+    sum.title = run.summary || "";
+    card.appendChild(sum);
     card.appendChild(renderPips(run));
     card.addEventListener("click", () => { S.sel = run.run_id; render(); });
     host.appendChild(card);
@@ -984,6 +995,11 @@ function renderDetail() {
     return;
   }
   title.textContent = run.summary || "(no summary)";
+  title.title = "Click to expand";
+  if (title.dataset.run !== run.run_id) {
+    title.dataset.run = run.run_id;
+    title.classList.remove("expanded");
+  }
   meta.textContent = run.short_id
     + " · " + basename(run.repository)
     + (run.candidate_sha ? " · candidate " + shortSha(run.candidate_sha) : "")
@@ -1066,7 +1082,9 @@ function renderWork() {
       row.appendChild(el("span", "wid", item.id));
       row.appendChild(el("span", "badge " + group.badge[1], group.badge[0]));
       card.appendChild(row);
-      card.appendChild(el("div", "sum", item.summary || "(no summary)"));
+      const wsum = el("div", "sum", item.summary || "(no summary)");
+      wsum.title = item.summary || "";
+      card.appendChild(wsum);
       const deps = el("div", "deps");
       const dependsOn = item.depends_on || [];
       deps.appendChild(el("span", null, dependsOn.length ? "Depends on" : "No dependencies"));
@@ -1126,8 +1144,16 @@ function renderEvidence() {
   }
   const run = selected;
 
+  if (S.evExpandedFor !== run.run_id) S.evExpanded = false;
   const title = el("div", "ev-title");
-  title.appendChild(el("span", "t", run.summary || "(no summary)"));
+  const evSummary = el("span", "t" + (S.evExpanded ? " expanded" : ""), run.summary || "(no summary)");
+  evSummary.title = "Click to expand";
+  evSummary.addEventListener("click", () => {
+    S.evExpanded = !S.evExpanded;
+    S.evExpandedFor = run.run_id;
+    render();
+  });
+  title.appendChild(evSummary);
   title.appendChild(el("span", "id", run.run_id));
   title.appendChild(el("span", "ro", "Read-only · rebuildable from events"));
   inner.appendChild(title);
@@ -1213,6 +1239,9 @@ async function refresh() {
   render();
 }
 
+document.getElementById("detail-title").addEventListener("click", event => {
+  event.currentTarget.classList.toggle("expanded");
+});
 document.getElementById("nav-runs").addEventListener("click", () => setView("runs"));
 document.getElementById("nav-work").addEventListener("click", () => setView("work"));
 document.getElementById("nav-evidence").addEventListener("click", () => setView("evidence"));
