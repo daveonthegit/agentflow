@@ -5,5 +5,10 @@ __pycache__/
 .agentflow/*
 !.agentflow/skills.lock
 !.agentflow/repository-profile.json
+!.agentflow/approvals.jsonl
+!.agentflow/external-completions.jsonl
+!.agentflow/policy.json
 !.agentflow/work/
 !.agentflow/work/**
+!.agentflow/proposals/
+!.agentflow/proposals/**
