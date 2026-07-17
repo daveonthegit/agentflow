@@ -186,10 +186,17 @@ def _commit_records(
 
     With no boundary the whole history reachable from ``HEAD`` is walked.
     Commits are returned oldest-first so the report reads in landing order.
+
+    Merge commits are excluded (``--no-merges``): a ``git merge --no-ff`` — the
+    "merge" strategy Agentflow's own merger uses to land a gated run — produces
+    a commit that carries no ``Work-Item`` trailer and whose ``git show`` reports
+    no changed paths, while every real commit it folds in already carries its own
+    attribution. Walking merge commits would flag that plumbing as ``untracked``
+    drift even though the underlying work is fully tracked.
     """
     range_spec = f"{boundary}..HEAD" if boundary else "HEAD"
     try:
-        out = _git(repository, "rev-list", "--reverse", range_spec)
+        out = _git(repository, "rev-list", "--no-merges", "--reverse", range_spec)
     except subprocess.CalledProcessError:
         return []
     records: list[CommitRecord] = []
