@@ -82,15 +82,15 @@ def _escape_markdown(text: str) -> str:
 
 def _render_item(item: dict) -> str:
     """Render one Work Item as a Markdown section, deterministically."""
-    lines = [f"### {item['id']}", "", _escape_markdown(item["summary"]), ""]
+    lines = [f"### {_escape_markdown(item['id'])}", "", _escape_markdown(item["summary"]), ""]
     depends_on = item.get("depends_on") or []
     if depends_on:
-        lines.append("Depends on: " + ", ".join(depends_on))
+        lines.append("Depends on: " + ", ".join(_escape_markdown(dep) for dep in depends_on))
     else:
         lines.append("Depends on: nothing")
     files = item.get("files") or []
     if files:
-        lines.append("File scope: " + ", ".join(files))
+        lines.append("File scope: " + ", ".join(_escape_markdown(glob) for glob in files))
     criteria = item.get("acceptance_criteria") or []
     lines.append("")
     if criteria:
