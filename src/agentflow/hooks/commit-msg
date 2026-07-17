@@ -1,0 +1,35 @@
+#!/bin/sh
+# agentflow-managed-hook: commit-msg
+# Vendored by `agentflow init`. Dependency-free; runs offline in milliseconds.
+#
+# Encourages a `Work-Item: <id>` trailer so landed work is matched to its open
+# Work Item. The enforcement mode is read from the committed repository policy
+# at .agentflow/policy.json (default: observe when the file or key is absent):
+#   observe -> suggest a trailer on stderr, never block the commit
+#   strict  -> require a trailer, block the commit when it is missing
+set -u
+
+msg_file="$1"
+
+mode=observe
+policy=.agentflow/policy.json
+if [ -f "$policy" ]; then
+	found=$(sed -n 's/.*"enforcement"[[:space:]]*:[[:space:]]*"\([A-Za-z]*\)".*/\1/p' "$policy" | head -n 1)
+	if [ -n "$found" ]; then
+		mode=$found
+	fi
+fi
+
+if grep -qiE '^[[:space:]]*Work-Item:[[:space:]]*[^[:space:]]+' "$msg_file"; then
+	exit 0
+fi
+
+if [ "$mode" = strict ]; then
+	echo "agentflow (strict): commit message needs a 'Work-Item: <id>' trailer." >&2
+	echo "Add a line like 'Work-Item: my-item-id' naming the open Work Item this commit delivers (see WORK.md)." >&2
+	exit 1
+fi
+
+echo "agentflow (observe): no 'Work-Item: <id>' trailer found." >&2
+echo "Consider adding one to match an open Work Item in WORK.md. Not required in observe mode." >&2
+exit 0

@@ -1,0 +1,22 @@
+#!/bin/sh
+# agentflow-managed-hook: pre-commit
+# Vendored by `agentflow init`. Dependency-free; runs offline in milliseconds.
+#
+# Refuses staged changes to the authoritative Work Graph under .agentflow/work/.
+# The Work Graph is mutated only through Agentflow, never by hand. Changes under
+# .agentflow/proposals/ (the proposal inbox) are never matched here, so they are
+# always allowed. This is the only thing this hook ever blocks.
+set -u
+
+staged=$(git diff --cached --name-only -- .agentflow/work 2>/dev/null)
+if [ -n "$staged" ]; then
+	echo "agentflow: refusing to commit direct edits to the Work Graph:" >&2
+	echo "$staged" | while IFS= read -r path; do
+		[ -n "$path" ] && echo "  $path" >&2
+	done
+	echo "The Work Graph under .agentflow/work/ is mutated only through Agentflow." >&2
+	echo "To change the work, drop a JSON proposal into .agentflow/proposals/ instead." >&2
+	exit 1
+fi
+
+exit 0
