@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
+import json
 import re
 from typing import Any
 
@@ -456,6 +458,78 @@ def validate_tester_report(value: Any) -> dict[str, Any]:
     if "discoveries" in value:
         return {**value, "discoveries": validate_discoveries(value["discoveries"])}
     return value
+
+
+# A proposals-inbox file is Discoveries-from-foreign-agents: any agent may drop
+# a JSON proposal into the quarantined ``.agentflow/proposals/`` directory, and
+# it reaches the Work Graph only through the same deterministic validation the
+# in-band Discoveries machinery uses. The per-ingest cap mirrors the Discoveries
+# cap so a foreign writer can never flood the graph in one pass.
+MAX_PROPOSALS_PER_INGEST = MAX_DISCOVERIES_PER_OUTPUT
+
+PROPOSAL_KIND_NEW_WORK = "new-work"
+PROPOSAL_KIND_COMPLETION_CLAIM = "completion-claim"
+PROPOSAL_KINDS = (PROPOSAL_KIND_NEW_WORK, PROPOSAL_KIND_COMPLETION_CLAIM)
+
+_PROPOSAL_FIELDS = ("kind", "summary", "acceptance_criteria", "relates_to")
+
+
+def validate_proposal(value: Any) -> dict[str, Any]:
+    """Validate one quarantined proposals-inbox file.
+
+    A proposal is JSON any foreign agent may write into
+    ``.agentflow/proposals/``. ``kind`` is either ``new-work`` (a suggested
+    future Work Item) or ``completion-claim`` (an assertion that work is
+    already done, which only a human may act on). ``summary`` is required for
+    both; ``acceptance_criteria`` is a required non-empty list for new-work and
+    optional for a completion-claim; ``relates_to`` is an optional list of
+    Work-Item ids the proposal references. Unknown fields are rejected so the
+    entry door stays explicit and versionable — writing an ill-formed file is a
+    reported defect, never a graph mutation.
+    """
+    if not isinstance(value, dict):
+        raise ContractError("proposal must be an object")
+    unknown = set(value) - set(_PROPOSAL_FIELDS)
+    if unknown:
+        raise ContractError(f"proposal contains unknown fields: {sorted(unknown)}")
+    kind = value.get("kind")
+    if kind not in PROPOSAL_KINDS:
+        raise ContractError(
+            f"proposal kind must be one of {sorted(PROPOSAL_KINDS)}"
+        )
+    if not isinstance(value.get("summary"), str) or not value["summary"].strip():
+        raise ContractError("proposal summary must be a non-empty string")
+    criteria = _validate_string_list(
+        value.get("acceptance_criteria", []), "proposal acceptance_criteria"
+    )
+    if kind == PROPOSAL_KIND_NEW_WORK and not criteria:
+        raise ContractError(
+            "new-work proposal requires at least one acceptance criterion"
+        )
+    relates_to = _validate_string_list(
+        value.get("relates_to", []), "proposal relates_to"
+    )
+    return {
+        "kind": kind,
+        "summary": value["summary"].strip(),
+        "acceptance_criteria": criteria,
+        "relates_to": relates_to,
+    }
+
+
+def proposal_work_item_id(proposal: dict[str, Any]) -> str:
+    """Content-derived stable id for a new-work proposal's Work Item.
+
+    Derived only from ``kind`` and ``summary`` (matching the improvement-proposal
+    precedent) so the same suggestion always maps to the same proposed Work Item
+    id, which is what lets ingest dedup a re-dropped proposal against the graph
+    and against its siblings in the same pass.
+    """
+    payload = json.dumps(
+        {"kind": proposal["kind"], "summary": proposal["summary"]},
+        sort_keys=True,
+    )
+    return "proposal-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def validate_review(value: Any) -> dict[str, Any]:
