@@ -100,6 +100,15 @@ def main() -> int:
         choices=MERGE_STRATEGIES,
         default="fast-forward",
     )
+    profile_parser.add_argument(
+        "--merge-protected",
+        action="store_true",
+        help=(
+            "mark merge_policy's target branch protected: it advances only "
+            "through the gated merge path and a merge is refused if the "
+            "branch has diverged out of band"
+        ),
+    )
     start_parser = subcommands.add_parser("start")
     start_parser.add_argument("summary", nargs="?")
     start_parser.add_argument(
@@ -267,12 +276,15 @@ def main() -> int:
         if args.allow_merge:
             merge_policy = {
                 "allow": True,
+                "protected": args.merge_protected,
                 "strategy": args.merge_strategy,
             }
             if args.merge_target_branch is not None:
                 merge_policy["target_branch"] = args.merge_target_branch
         elif args.merge_target_branch is not None:
             parser.error("--merge-target-branch requires --allow-merge")
+        elif args.merge_protected:
+            parser.error("--merge-protected requires --allow-merge")
         result = create_repository_profile(
             repository=Path.cwd(),
             checks=args.check,
@@ -469,6 +481,7 @@ def main() -> int:
                 {
                     "approved_sha": result.approved_sha,
                     "artifact": str(result.artifact),
+                    "ci_artifact": str(result.ci_artifact),
                     "merged_by": result.merged_by,
                     "merged_sha": result.merged_sha,
                     "run_id": result.run_id,

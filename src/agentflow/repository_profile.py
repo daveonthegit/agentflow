@@ -85,13 +85,20 @@ def _validated_merge_policy(merge_policy: dict, repository: Path) -> dict:
     """Normalize a declared merge policy for the profile.
 
     ``allow`` must be an explicit boolean, ``strategy`` one of
-    ``MERGE_STRATEGIES`` (default fast-forward), and ``target_branch`` a
-    non-empty branch name, defaulting to the repository's currently
-    checked-out branch.
+    ``MERGE_STRATEGIES`` (default fast-forward), ``target_branch`` a
+    non-empty branch name defaulting to the repository's currently
+    checked-out branch, and ``protected`` a boolean (default false) declaring
+    that the target branch advances only through the gated merge path and
+    must not diverge out of band.
     """
     allow = merge_policy.get("allow")
     if not isinstance(allow, bool):
         raise ValueError("Repository Profile merge_policy.allow must be a boolean")
+    protected = merge_policy.get("protected", False)
+    if not isinstance(protected, bool):
+        raise ValueError(
+            "Repository Profile merge_policy.protected must be a boolean"
+        )
     strategy = merge_policy.get("strategy", "fast-forward")
     if strategy not in MERGE_STRATEGIES:
         raise ValueError(
@@ -112,7 +119,12 @@ def _validated_merge_policy(merge_policy: dict, repository: Path) -> dict:
             "Repository Profile merge_policy.target_branch must be a "
             "non-empty branch name"
         )
-    return {"allow": allow, "strategy": strategy, "target_branch": target_branch}
+    return {
+        "allow": allow,
+        "protected": protected,
+        "strategy": strategy,
+        "target_branch": target_branch,
+    }
 
 
 def create_repository_profile(
