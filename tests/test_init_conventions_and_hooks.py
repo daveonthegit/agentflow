@@ -219,6 +219,32 @@ class PolicyCommittabilityTests(unittest.TestCase):
             (agentflow_dir / ".gitignore").write_text("policy.json\n", encoding="utf-8")
             self._assert_uncommittable(repository, "policy.json")
 
+    def test_directory_ignore_form_suggested_fix_actually_works(self) -> None:
+        # The error message for a directory-form ignore rule suggests adding
+        # a negation "after it" (e.g. '!/.agentflow/policy.json'). Applying
+        # that literal suggestion must make init succeed; if the directory
+        # itself (not its contents) is excluded, git cannot re-include a
+        # file inside it via a negation, so the suggested fix is a dead end
+        # and re-running init reproduces the identical failure.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repo"
+            _init_git_repo(repository)
+            (repository / ".gitignore").write_text(".agentflow/\n", encoding="utf-8")
+
+            first = _run_init(repository)
+            self.assertEqual(first.returncode, 1, first.stdout)
+
+            (repository / ".gitignore").write_text(
+                ".agentflow/\n!/.agentflow/policy.json\n", encoding="utf-8"
+            )
+            second = _run_init(repository)
+            self.assertEqual(
+                second.returncode,
+                0,
+                "applying the tool's own suggested fix verbatim did not "
+                f"resolve committability: {second.stderr}",
+            )
+
     def test_negated_reinclude_is_treated_as_committable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = Path(temp_dir) / "repo"
