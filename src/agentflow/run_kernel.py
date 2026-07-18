@@ -625,9 +625,11 @@ def select_live_run(
         index = int(token)
         if 1 <= index <= len(candidates):
             return candidates[index - 1].run_id
-        raise ValueError(
-            f"selection out of range; expected 1-{len(candidates)}"
-        )
+        # An all-digit token that is not a valid list index is still a legal
+        # short-id prefix: run ids are hex, so ~2% of short ids are all digits
+        # (e.g. "12345678"). Fall through to prefix matching rather than
+        # rejecting it as an out-of-range index, which would otherwise make the
+        # picker reject those runs nondeterministically.
     matches = [
         run
         for run in candidates
