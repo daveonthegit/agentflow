@@ -36,7 +36,8 @@ from .post_merge import (
     resolve_post_merge_failure,
     verify_merged_run,
 )
-from .project_setup import PolicyNotCommittableError, initialize_repository
+from .committability import EvidenceNotCommittableError
+from .project_setup import initialize_repository
 from .paths import agentflow_home
 from .proposals import ingest_proposals, scan_proposals
 from .repository_profile import (
@@ -446,7 +447,7 @@ def main() -> int:
             result = initialize_repository(
                 args.repository, enforcement=args.enforcement
             )
-        except PolicyNotCommittableError as error:
+        except EvidenceNotCommittableError as error:
             print(str(error), file=sys.stderr)
             return 1
         print(
@@ -873,11 +874,15 @@ def main() -> int:
         if args.mode == "approve":
             if args.approved_by is None:
                 parser.error("work approve requires --approved-by")
-            record = approve_work_graph(
-                repository=args.repository,
-                data_dir=agentflow_home(args.data_dir),
-                approved_by=args.approved_by,
-            )
+            try:
+                record = approve_work_graph(
+                    repository=args.repository,
+                    data_dir=agentflow_home(args.data_dir),
+                    approved_by=args.approved_by,
+                )
+            except EvidenceNotCommittableError as error:
+                print(str(error), file=sys.stderr)
+                return 1
             print(
                 json.dumps(
                     {
@@ -972,7 +977,11 @@ def main() -> int:
             )
             return 0
         if args.mode == "ingest":
-            result = ingest_proposals(args.repository)
+            try:
+                result = ingest_proposals(args.repository)
+            except EvidenceNotCommittableError as error:
+                print(str(error), file=sys.stderr)
+                return 1
             print(
                 json.dumps(
                     {
@@ -1029,6 +1038,9 @@ def main() -> int:
                     dispositions,
                     confirmed_by=args.confirmed_by,
                 )
+            except EvidenceNotCommittableError as error:
+                print(str(error), file=sys.stderr)
+                return 1
             except (ContractError, KeyError, TypeError) as error:
                 print(str(error), file=sys.stderr)
                 return 1

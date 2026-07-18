@@ -44,6 +44,7 @@ import re
 import subprocess
 from typing import Protocol
 
+from .committability import ensure_committable
 from .contracts import (
     ContractError,
     WORK_ITEM_STATUS_PROPOSED,
@@ -180,13 +181,16 @@ def _work_graph_approvals_path(data_dir: Path) -> Path:
     return data_dir / "work" / "graph-approvals.jsonl"
 
 
+REPO_APPROVALS_RELATIVE = ".agentflow/approvals.jsonl"
+
+
 def _repo_work_graph_approvals_path(repository: Path) -> Path:
     """Git-tracked mirror of Work Graph approvals in the Target Repository.
 
     Deliberately outside ``.agentflow/work/`` so it is never parsed as Work
     Graph content or folded into the graph content hash.
     """
-    return Path(repository) / ".agentflow" / "approvals.jsonl"
+    return Path(repository) / REPO_APPROVALS_RELATIVE
 
 
 def _read_approvals(path: Path) -> list[dict]:
@@ -269,6 +273,17 @@ def approve_work_graph(
     graph = load_work_graph(repository, backend=backend)
     if not graph:
         raise ValueError("cannot approve an empty Work Graph")
+    # The repo-tracked mirror is the whole point of a portable approval: an
+    # ignore rule that swallows it would silently strip approval currency from
+    # everyone who only has the repository. Prove it is committable before
+    # writing either log, so an un-committable mirror fails actionably instead
+    # of leaving home evidence that the repository can never corroborate.
+    ensure_committable(
+        Path(repository),
+        REPO_APPROVALS_RELATIVE,
+        description="the Work Graph approval mirror",
+        retry_command="agentflow work approve",
+    )
     if now is None:
         now = datetime.now(timezone.utc)
     graph_hash = work_graph_content_hash(graph)

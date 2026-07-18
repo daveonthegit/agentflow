@@ -43,6 +43,7 @@ from .contracts import (
     WORK_ITEM_STATUS_PROPOSED,
     validate_reconcile_disposition,
 )
+from .committability import ensure_committable
 from .drift import KIND_CLOSED_ITEM, KIND_SCOPE_DRIFT, detect_work_drift
 from .proposals import scan_proposals
 from .work_graph import WorkGraphBackend, load_work_graph, save_work_graph
@@ -346,6 +347,19 @@ def apply_reconcile(
             invalidated = _strip_removed_dependencies(dict(item), removed_ids)
             invalidated["status"] = WORK_ITEM_STATUS_PROPOSED
             updated.append(invalidated)
+
+    # A ``completed_externally`` disposition is only recorded in the git-tracked
+    # external-completion log; if an ignore rule swallows that log the item is
+    # removed from the graph but its closure evidence is never shared, leaving
+    # an unexplained deletion. Prove the log is committable before mutating the
+    # graph so an un-committable path fails actionably instead.
+    if external_records:
+        ensure_committable(
+            repository,
+            EXTERNAL_COMPLETIONS_RELATIVE.as_posix(),
+            description="the external-completion evidence log",
+            retry_command="agentflow work reconcile-apply",
+        )
 
     changed = any(
         entry["disposition"] != DISPOSITION_STILL_VALID for entry in confirmed
