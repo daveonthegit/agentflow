@@ -24,6 +24,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
+from .committability import ensure_committable
 from .contracts import (
     MAX_PROPOSALS_PER_INGEST,
     PROPOSAL_KIND_COMPLETION_CLAIM,
@@ -159,6 +160,19 @@ def ingest_proposals(
     left in place for the future reconcile command. Invalid files are reported
     and left in place for their author to fix; nothing here is ever fatal.
     """
+    # The proposals inbox is the filesystem door foreign agents drop work
+    # through, and it only works if a proposal committed here actually travels
+    # with the repository to the human who ingests it. An ignore rule that
+    # swallows the inbox would silently discard every proposal, so prove the
+    # directory is committable before ingesting instead of consuming files whose
+    # authors' intent was never shared.
+    ensure_committable(
+        repository,
+        PROPOSALS_RELATIVE_DIR.as_posix(),
+        description="the proposals inbox",
+        retry_command="agentflow work ingest",
+        is_directory=True,
+    )
     scanned = scan_proposals(repository)
     new_work = [p for p in scanned.valid if p.kind == PROPOSAL_KIND_NEW_WORK]
     claims = [p for p in scanned.valid if p.kind == PROPOSAL_KIND_COMPLETION_CLAIM]
