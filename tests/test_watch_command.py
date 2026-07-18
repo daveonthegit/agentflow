@@ -529,5 +529,74 @@ class WatchDisplayTests(unittest.TestCase):
         )
 
 
+class SelectLiveRunTests(unittest.TestCase):
+    """Deterministic coverage of the interactive picker's token handling.
+
+    Run ids are hex, so ~2% of short ids are all digits. Those must select by
+    short-id prefix and not be misread as an out-of-range list index — the
+    source of the watch-selection flake. These tests pin every branch without
+    depending on which random ids a run happens to draw.
+    """
+
+    @staticmethod
+    def _status(run_id: str, state: str):
+        from agentflow.run_kernel import RunStatus
+
+        return RunStatus(
+            run_id=run_id,
+            state=state,
+            summary="a live run",
+            repository="target",
+            base_sha=None,
+            worktree=None,
+            repository_profile_path=None,
+            candidate_sha=None,
+            approved_sha=None,
+        )
+
+    def _select(self, run_ids: list[tuple[str, str]], token: str) -> str:
+        import io
+        from unittest import mock
+
+        from agentflow import run_kernel
+
+        candidates = [self._status(rid, state) for rid, state in run_ids]
+        with mock.patch.object(
+            run_kernel, "list_runs", return_value=candidates
+        ):
+            return run_kernel.select_live_run(
+                data_dir=Path("unused"),
+                inp=io.StringIO(f"{token}\n"),
+                err=io.StringIO(),
+            )
+
+    def test_all_digit_short_id_selects_by_prefix_not_index(self) -> None:
+        # "12345678" would parse as a 1-based index far out of range; it must
+        # still match the run whose short id it is.
+        numeric = "12345678" + "0" * 24
+        other = "ab" + "0" * 30
+        chosen = self._select(
+            [(numeric, "awaiting_human"), (other, "ready")],
+            token="12345678",
+        )
+        self.assertEqual(chosen, numeric)
+
+    def test_valid_index_still_wins_over_prefix(self) -> None:
+        first = "1" + "a" * 31
+        second = "2" + "b" * 31
+        chosen = self._select(
+            [(first, "awaiting_human"), (second, "ready")],
+            token="2",
+        )
+        self.assertEqual(chosen, second)
+
+    def test_out_of_range_numeric_without_match_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self._select(
+                [("a" * 32, "awaiting_human"), ("b" * 32, "ready")],
+                token="99",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
