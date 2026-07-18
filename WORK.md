@@ -14,16 +14,6 @@ This board is a generated mirror of the authoritative Work Graph under `.agentfl
 
 ## Open Work Items
 
-### proposal-07c2ca8afce07f88
-
-De-flake the interactive watch-selection test
-
-Depends on: nothing
-
-Acceptance criteria:
-- test_watch_without_run_id_accepts_short_id_selection passes deterministically under the full suite (no stdin selection race), verified by repeated full-suite runs
-- The fix addresses the race in the test or the watch selection prompt itself; it does not skip, retry-loop, or weaken the assertion
-
 ### proposal-e141fc8f2bb4b984
 
 Prove committability for every repo-tracked evidence file, not just the enforcement policy
