@@ -281,6 +281,25 @@ class IngestCommittabilityTests(_RepoCase):
         result = ingest_proposals(repo.path)
         self.assertEqual(result.removed, ["new.json"])
 
+    def test_ignored_inbox_fails_even_before_any_proposal_is_dropped(self) -> None:
+        # The proposals directory does not exist on disk until some agent
+        # drops a file into it. A directory-only ignore pattern like
+        # "proposals/" is only detected by ``git check-ignore`` once the
+        # directory actually exists -- so the very first ``work ingest`` on a
+        # fresh clone (or any ingest run between proposal drops) must still
+        # catch an ignored inbox before a proposal ever silently vanishes
+        # into it.
+        repo = self._repo()
+        repo.write_graph([ITEM])
+        repo.ignore(".agentflow/proposals/")
+        repo.commit("init")
+        self.assertFalse((repo.path / ".agentflow" / "proposals").exists())
+
+        with self.assertRaises(EvidenceNotCommittableError) as caught:
+            ingest_proposals(repo.path)
+
+        self.assertNamesRule(caught.exception, ".agentflow/proposals", "proposals/")
+
 
 class CliCommittabilityTests(_RepoCase):
     def test_ingest_cli_exits_actionably_not_with_a_traceback(self) -> None:
