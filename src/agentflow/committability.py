@@ -70,6 +70,7 @@ def ensure_committable(
     *,
     description: str,
     retry_command: str,
+    is_directory: bool = False,
 ) -> None:
     """Raise if ``evidence_relative`` is git-ignored in ``repository``.
 
@@ -80,9 +81,18 @@ def ensure_committable(
     no-op. Only when the path is genuinely ignored is an actionable
     :class:`EvidenceNotCommittableError` raised so the caller can fail before it
     writes evidence that would never be shared.
+
+    ``is_directory`` marks the evidence path as a directory (the proposals
+    inbox). A directory-only ignore pattern (``proposals/``) is matched by
+    ``git check-ignore`` only when the queried path is known to be a directory,
+    which git cannot infer from a path that does not exist on disk yet -- the
+    inbox is empty until an agent drops the first proposal. Querying with a
+    trailing slash makes git treat the path as a directory so an ignored inbox
+    is caught before any proposal silently vanishes into it.
     """
     evidence_relative = PurePosixPath(evidence_relative).as_posix()
-    ignore_rule = _ignore_rule(repository, evidence_relative)
+    query = f"{evidence_relative}/" if is_directory else evidence_relative
+    ignore_rule = _ignore_rule(repository, query)
     if ignore_rule is None:
         return
     fix_file, fix_lines = _suggested_reinclusion(evidence_relative, ignore_rule)

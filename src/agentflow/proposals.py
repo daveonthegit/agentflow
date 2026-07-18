@@ -171,6 +171,7 @@ def ingest_proposals(
         PROPOSALS_RELATIVE_DIR.as_posix(),
         description="the proposals inbox",
         retry_command="agentflow work ingest",
+        is_directory=True,
     )
     scanned = scan_proposals(repository)
     new_work = [p for p in scanned.valid if p.kind == PROPOSAL_KIND_NEW_WORK]
