@@ -325,6 +325,68 @@ class CliCommittabilityTests(_RepoCase):
         self.assertIn(".agentflow/proposals", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_approve_cli_exits_actionably_not_with_a_traceback(self) -> None:
+        repo = self._repo()
+        repo.write_graph([ITEM])
+        repo.ignore(".agentflow/approvals.jsonl")
+        repo.commit("init")
+        data_dir = repo.path / "home"
+
+        result = _agentflow(
+            "work",
+            "approve",
+            "--repository",
+            str(repo.path),
+            "--approved-by",
+            "dave",
+            "--data-dir",
+            str(data_dir),
+            cwd=repo.path,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(".agentflow/approvals.jsonl", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertFalse((repo.path / ".agentflow" / "approvals.jsonl").exists())
+
+    def test_reconcile_apply_cli_exits_actionably_not_with_a_traceback(self) -> None:
+        repo = self._repo()
+        repo.write_graph([ITEM])
+        repo.write("README.md", "# repo\n")
+        repo.ignore(".agentflow/external-completions.jsonl")
+        repo.commit("init")
+        plan_file = repo.path / "plan.json"
+        plan_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "work_item_id": "open-item",
+                        "disposition": DISPOSITION_COMPLETED_EXTERNALLY,
+                        "confirmed": True,
+                        "external_commits": ["abc123"],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = _agentflow(
+            "work",
+            "reconcile-apply",
+            "--repository",
+            str(repo.path),
+            "--plan",
+            str(plan_file),
+            "--confirmed-by",
+            "dave",
+            cwd=repo.path,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(".agentflow/external-completions.jsonl", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(
+            [item["id"] for item in load_work_graph(repo.path)], ["open-item"]
+        )
+
 
 def _parse_fix(message: str) -> tuple[str, list[str]]:
     match = re.search(r"append these lines to '([^']+)':\n", message)
