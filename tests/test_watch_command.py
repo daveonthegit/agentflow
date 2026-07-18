@@ -597,6 +597,18 @@ class SelectLiveRunTests(unittest.TestCase):
                 token="99",
             )
 
+    def test_out_of_range_numeric_matching_two_short_ids_is_ambiguous(self) -> None:
+        # The fallthrough to prefix matching must still enforce uniqueness:
+        # an out-of-range digit token that prefix-matches more than one run
+        # is ambiguous, not silently resolved to the first match.
+        first = "50" + "a" * 30
+        second = "50" + "b" * 30
+        with self.assertRaises(ValueError):
+            self._select(
+                [(first, "awaiting_human"), (second, "ready")],
+                token="50",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
