@@ -14,15 +14,7 @@ This board is a generated mirror of the authoritative Work Graph under `.agentfl
 
 ## Open Work Items
 
-### proposal-e141fc8f2bb4b984
-
-Prove committability for every repo-tracked evidence file, not just the enforcement policy
-
-Depends on: nothing
-
-Acceptance criteria:
-- approve_work_graph, reconcile external completions, and proposal ingestion verify with git check-ignore that their repo-tracked evidence files (.agentflow/approvals.jsonl, .agentflow/external-completions.jsonl, .agentflow/proposals/) are committable, reusing the fail-actionably pattern init uses for policy.json
-- A repository whose ignore rules swallow an evidence file gets one actionable message naming the rule instead of silently unshared evidence
+_None._
 
 
 ## Proposed Work Items
