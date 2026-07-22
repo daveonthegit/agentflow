@@ -104,6 +104,10 @@ A compare-and-append event in a Run's own event log by which exactly one process
 
 A structured finding returned by an Agent Role as part of its validated output contract. A Discovery is applied to the Work Graph only through deterministic validation, never by direct agent mutation.
 
+## External Validation
+
+A validation of a candidate revision whose Workspace, worker session, approval, and delivery are owned by an outside orchestrator rather than by Agentflow. Agentflow verifies the caller-owned worktree is clean at an exact Candidate Revision, verifies the committed Repository Profile, runs the profile's authoritative checks in place, and records replayable evidence and a validated-or-failed outcome. It never creates or deletes a worktree, launches an agent, reaches `awaiting_human`, merges, pushes, or owns approval. Its evidence lives in its own append-only log outside the Run store, and it references the caller's repository and worktree by path and the candidate by SHA rather than merging their state.
+
 ## Reconciliation Pass
 
 One bounded run of the reconcile command. It reads the Work Graph, Run Evidence, and Workspaces, records every decision it makes as an event, and never advances a Run through a human gate.

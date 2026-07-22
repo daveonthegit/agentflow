@@ -329,6 +329,64 @@ def default_check_environment_fingerprint(
     return fingerprint
 
 
+def _deterministic_check_environment() -> dict[str, str]:
+    """The pinned environment the authoritative checks always run under.
+
+    ``LANG``/``PYTHONHASHSEED``/``TZ`` are forced to fixed values so check
+    output is reproducible regardless of the invoking shell.
+    """
+    return {
+        **os.environ,
+        "LANG": "C.UTF-8",
+        "PYTHONHASHSEED": "0",
+        "TZ": "UTC",
+    }
+
+
+def run_authoritative_checks(
+    *,
+    commands: list,
+    workspace: Path,
+    attempt: int,
+    clock: Callable[[], datetime] | None = None,
+    monotonic: Callable[[], float] | None = None,
+    environment_fingerprint: Callable[[], dict[str, str]] | None = None,
+    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> tuple[list[dict], bool]:
+    """Run the Repository Profile's authoritative checks in ``workspace``.
+
+    This is the single deterministic check runner shared by the built stage,
+    the post-tests re-check, and the External Validation path, so every caller
+    produces byte-for-byte identical evidence quality: the pinned check
+    environment, the allowlisted environment fingerprint, and per-check
+    ``started_at``/``duration_ms``/``returncode``/``stdout``/``stderr``.
+    Returns the per-check evidence records and whether every check passed.
+    """
+    if clock is None:
+        clock = lambda: datetime.now(timezone.utc)
+    if monotonic is None:
+        monotonic = time.monotonic
+    if environment_fingerprint is None:
+        environment_fingerprint = default_check_environment_fingerprint
+    check_env = _deterministic_check_environment()
+    fingerprint = {
+        **environment_fingerprint(),
+        "LANG": check_env["LANG"],
+        "PYTHONHASHSEED": check_env["PYTHONHASHSEED"],
+        "TZ": check_env["TZ"],
+    }
+    return _run_profile_checks(
+        commands=commands,
+        workspace=workspace,
+        attempt=attempt,
+        environment=check_env,
+        environment_fingerprint=fingerprint,
+        clock=clock,
+        monotonic=monotonic,
+        run_command=run_command,
+    )
+
+
 def _run_profile_checks(
     *,
     commands: list,
@@ -570,27 +628,14 @@ def _advance_claimed_run(
             raise ValueError("Workspace HEAD no longer matches the candidate SHA")
         if _git("status", "--porcelain", "--untracked-files=all", cwd=workspace):
             raise ValueError("Workspace is not clean at the candidate SHA")
-        check_env = {
-            **os.environ,
-            "LANG": "C.UTF-8",
-            "PYTHONHASHSEED": "0",
-            "TZ": "UTC",
-        }
         attempt = _candidate_generation(events)
-        fingerprint = {
-            **environment_fingerprint(),
-            "LANG": check_env["LANG"],
-            "PYTHONHASHSEED": check_env["PYTHONHASHSEED"],
-            "TZ": check_env["TZ"],
-        }
-        checks, all_passed = _run_profile_checks(
+        checks, all_passed = run_authoritative_checks(
             commands=profile["checks"],
             workspace=workspace,
             attempt=attempt,
-            environment=check_env,
-            environment_fingerprint=fingerprint,
             clock=clock,
             monotonic=monotonic,
+            environment_fingerprint=environment_fingerprint,
         )
         workspace_clean = not _git(
             "status", "--porcelain", "--untracked-files=all", cwd=workspace
@@ -707,26 +752,13 @@ def _advance_claimed_run(
         _git("add", "--all", cwd=workspace)
         _git("commit", "-m", f"Agentflow run {run_id} tests {generation}", cwd=workspace)
         new_candidate_sha = _git("rev-parse", "HEAD", cwd=workspace)
-        check_env = {
-            **os.environ,
-            "LANG": "C.UTF-8",
-            "PYTHONHASHSEED": "0",
-            "TZ": "UTC",
-        }
-        fingerprint = {
-            **environment_fingerprint(),
-            "LANG": check_env["LANG"],
-            "PYTHONHASHSEED": check_env["PYTHONHASHSEED"],
-            "TZ": check_env["TZ"],
-        }
-        checks, all_passed = _run_profile_checks(
+        checks, all_passed = run_authoritative_checks(
             commands=profile["checks"],
             workspace=workspace,
             attempt=generation,
-            environment=check_env,
-            environment_fingerprint=fingerprint,
             clock=clock,
             monotonic=monotonic,
+            environment_fingerprint=environment_fingerprint,
         )
         workspace_clean = not _git(
             "status", "--porcelain", "--untracked-files=all", cwd=workspace

@@ -12,6 +12,9 @@ remain in that repository.
   behavior as implemented, target, or a confirmed decision.
 - [`architecture/run-kernel.md`](architecture/run-kernel.md) — implemented
   deterministic kernel and evidence layout.
+- [`architecture/external-validation.md`](architecture/external-validation.md) —
+  external-worker validation: validating a caller-owned candidate for an outside
+  orchestrator (e.g. Firstmate) without owning its worktree, agent, or approval.
 - [`decisions/agentflow-factory.md`](decisions/agentflow-factory.md) —
   compact map of unresolved implementation choices.
 - [`development/dogfooding.md`](development/dogfooding.md) — self-hosting

@@ -24,6 +24,9 @@ agentflow abandon <run-id> --abandoned-by <identity> [--reason <text>]
 agentflow rebase <run-id>
 agentflow work (list | ready) [--repository <path>]
 agentflow reconcile [--adapter claude|cursor|codex|fake] [--repository <path>]
+agentflow external register "<summary>" --worktree <path> --candidate-sha <sha> [--repository <path>] [--acceptance-criterion <text>] [--external-ref <handle>]
+agentflow external (validate | status) <external-id>
+agentflow external list
 ```
 
 - `init` installs the canonical project-local Agentflow skill and a managed
@@ -251,6 +254,24 @@ agentflow reconcile [--adapter claude|cursor|codex|fake] [--repository <path>]
   decision report (`dispatched`, `advanced`, `blocked`, `completed`). Capacity
   limits, stale-claim recovery, and re-dispatch of failed Runs are later work.
 
+- `external` validates a candidate revision that an outside orchestrator (for
+  example Firstmate) already owns the worktree and worker session for, without
+  Agentflow owning worktree lifecycle, agent spawning, human approval, or
+  delivery. `external register` verifies a clean caller-owned worktree checked
+  out at an exact candidate SHA and a fresh committed Repository Profile, then
+  records an immutable registration; `external validate` re-verifies those
+  invariants under a stage claim and runs the profile's authoritative checks
+  **in place** in the caller's worktree through the same
+  `run_authoritative_checks` helper the built stage uses, appending
+  `external_checks_passed` (`validated`) or `external_checks_failed`
+  (`validation_failed`) with write-once check evidence; `external status`/`list`
+  replay the outcome and candidate identity. Its evidence lives under
+  `external/<external-id>/` — never in `runs/` — with its own event vocabulary
+  and state projection, so it never creates or deletes a worktree, invokes an
+  `AgentAdapter`, reaches `awaiting_human`, merges, pushes, or records approval.
+  See [`external-validation.md`](external-validation.md) for the full contract
+  and the Firstmate bridge requirements.
+
 ## Agentflow Home
 
 Run Evidence and Workspaces live outside both Agentflow and the Target
@@ -280,9 +301,18 @@ an override so they cannot contaminate a developer's real runs.
 │       ├── repair-report-<n>.json
 │       ├── <role>[-<n>]-transcript.jsonl
 │       └── events.jsonl
+├── external/
+│   └── <external-id>/
+│       ├── registration.json
+│       ├── checks-1.json
+│       └── events.jsonl
 └── worktrees/
     └── <run-id>/
 ```
+
+External Validation records live under `external/<external-id>/`, entirely
+separate from `runs/`; see
+[`external-validation.md`](external-validation.md).
 
 ## Event contract
 

@@ -30,6 +30,13 @@ from .improvement import (
 )
 from .deployment import deploy_run
 from .drift import detect_work_drift
+from .external_validation import (
+    ExternalValidationError,
+    list_external_validations,
+    read_external_status,
+    register_external_validation,
+    validate_external_task,
+)
 from .merger import merge_approved_run
 from .post_merge import (
     list_recovery_proposals,
@@ -440,6 +447,59 @@ def main() -> int:
     serve_parser.add_argument("--data-dir", type=Path)
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=8787)
+    external_parser = subcommands.add_parser(
+        "external",
+        help=(
+            "validate a caller-owned candidate revision without owning the "
+            "worktree, agent, approval, or delivery: register an externally "
+            "managed task, run the Repository Profile checks, and persist "
+            "replayable validated-or-failed evidence"
+        ),
+    )
+    external_parser.add_argument(
+        "mode", choices=("register", "validate", "status", "list")
+    )
+    external_parser.add_argument(
+        "target",
+        nargs="?",
+        help=(
+            "the task summary for `register`, or the External Validation id "
+            "for `validate` and `status`"
+        ),
+    )
+    external_parser.add_argument(
+        "--worktree",
+        type=Path,
+        help="caller-owned clean git worktree checked out at the candidate SHA",
+    )
+    external_parser.add_argument(
+        "--repository",
+        type=Path,
+        help=(
+            "caller-owned repository the worktree belongs to; defaults to the "
+            "worktree's own top level when omitted"
+        ),
+    )
+    external_parser.add_argument(
+        "--candidate-sha",
+        help="exact candidate revision; must equal the worktree HEAD",
+    )
+    external_parser.add_argument(
+        "--acceptance-criterion",
+        action="append",
+        default=[],
+        dest="acceptance_criteria",
+    )
+    external_parser.add_argument(
+        "--external-ref",
+        help="opaque caller-side task handle recorded as evidence (e.g. a "
+        "Firstmate task id)",
+    )
+    external_parser.add_argument(
+        "--validated-by",
+        help="identity attributed to the validation run (for validate)",
+    )
+    external_parser.add_argument("--data-dir", type=Path)
     args = parser.parse_args()
 
     if args.command == "init":
@@ -1175,6 +1235,111 @@ def main() -> int:
             adapter=adapter,
         )
         print(json.dumps(report, sort_keys=True))
+        return 0
+
+    if args.command == "external":
+        data_dir = agentflow_home(args.data_dir)
+        if args.mode == "register":
+            if args.target is None:
+                parser.error("external register requires a task summary")
+            if args.worktree is None:
+                parser.error("external register requires --worktree")
+            if args.candidate_sha is None:
+                parser.error("external register requires --candidate-sha")
+            try:
+                registered = register_external_validation(
+                    summary=args.target,
+                    worktree=args.worktree,
+                    candidate_sha=args.candidate_sha,
+                    repository=args.repository,
+                    acceptance_criteria=args.acceptance_criteria,
+                    external_ref=args.external_ref,
+                    data_dir=data_dir,
+                )
+            except ExternalValidationError as error:
+                print(str(error), file=sys.stderr)
+                return 1
+            response = {
+                "candidate_sha": registered.candidate_sha,
+                "external_id": registered.external_id,
+                "repository": registered.repository,
+                "repository_profile_path": registered.repository_profile_path,
+                "state": registered.state,
+                "worktree": registered.worktree,
+            }
+            if registered.external_ref is not None:
+                response["external_ref"] = registered.external_ref
+            print(json.dumps(response, sort_keys=True))
+            return 0
+        if args.mode == "validate":
+            if args.target is None:
+                parser.error("external validate requires an external id")
+            try:
+                result = validate_external_task(
+                    external_id=args.target,
+                    validated_by=args.validated_by,
+                    data_dir=data_dir,
+                )
+            except ExternalValidationError as error:
+                print(str(error), file=sys.stderr)
+                return 1
+            response = {
+                "artifact": str(result.artifact),
+                "candidate_sha": result.candidate_sha,
+                "external_id": result.external_id,
+                "passed": result.passed,
+                "state": result.state,
+            }
+            if result.validated_by is not None:
+                response["validated_by"] = result.validated_by
+            print(json.dumps(response, sort_keys=True))
+            return 0 if result.passed else 1
+        if args.mode == "status":
+            if args.target is None:
+                parser.error("external status requires an external id")
+            try:
+                status = read_external_status(
+                    external_id=args.target, data_dir=data_dir
+                )
+            except ExternalValidationError as error:
+                print(str(error), file=sys.stderr)
+                return 1
+            response = {
+                "candidate_sha": status.candidate_sha,
+                "external_id": status.external_id,
+                "repository": status.repository,
+                "state": status.state,
+                "summary": status.summary,
+                "worktree": status.worktree,
+            }
+            if status.repository_profile_path is not None:
+                response["repository_profile_path"] = status.repository_profile_path
+            if status.external_ref is not None:
+                response["external_ref"] = status.external_ref
+            if status.acceptance_criteria is not None:
+                response["acceptance_criteria"] = status.acceptance_criteria
+            if status.validated_by is not None:
+                response["validated_by"] = status.validated_by
+            if status.checks_artifact is not None:
+                response["checks_artifact"] = status.checks_artifact
+            if status.source is not None:
+                response["source"] = status.source
+            print(json.dumps(response, sort_keys=True))
+            return 0
+        entries = []
+        for status in list_external_validations(data_dir=data_dir):
+            entry = {
+                "candidate_sha": status.candidate_sha,
+                "external_id": status.external_id,
+                "repository": status.repository,
+                "state": status.state,
+                "summary": status.summary,
+                "worktree": status.worktree,
+            }
+            if status.external_ref is not None:
+                entry["external_ref"] = status.external_ref
+            entries.append(entry)
+        print(json.dumps(entries, sort_keys=True))
         return 0
 
     task = validate_task_spec(json.loads(args.task.read_text(encoding="utf-8")))

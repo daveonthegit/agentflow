@@ -881,9 +881,15 @@ def append_event(
     run_id: str,
     event_type: str,
     holder: str | None = None,
+    events_path: Path | None = None,
     **fields: object,
 ) -> None:
-    events_path = data_dir / "runs" / run_id / "events.jsonl"
+    # ``events_path`` lets callers whose event log lives outside ``runs/`` (for
+    # example the External Validation store under ``external/``) reuse the exact
+    # same locked, sequence-checked append. It defaults to the Run log so every
+    # existing caller is unaffected.
+    if events_path is None:
+        events_path = data_dir / "runs" / run_id / "events.jsonl"
     # Compute the sequence number and write the record under the same advisory
     # lock the claim operations use, so the read-count-then-append window is
     # closed. Concurrent writers to one Run's log are serialized and sequence
@@ -1028,10 +1034,12 @@ def acquire_claim(
     holder: str,
     lease_seconds: int = DEFAULT_CLAIM_LEASE_SECONDS,
     now: datetime | None = None,
+    events_path: Path | None = None,
 ) -> None:
     if now is None:
         now = datetime.now(timezone.utc)
-    events_path = data_dir / "runs" / run_id / "events.jsonl"
+    if events_path is None:
+        events_path = data_dir / "runs" / run_id / "events.jsonl"
     with events_path.open("r+", encoding="utf-8") as events_file:
         fcntl.flock(events_file.fileno(), fcntl.LOCK_EX)
         lines = events_file.read().splitlines()
@@ -1061,8 +1069,15 @@ def acquire_claim(
         events_file.write(json.dumps(acquired, sort_keys=True) + "\n")
 
 
-def release_claim(*, data_dir: Path, run_id: str, holder: str) -> None:
-    events_path = data_dir / "runs" / run_id / "events.jsonl"
+def release_claim(
+    *,
+    data_dir: Path,
+    run_id: str,
+    holder: str,
+    events_path: Path | None = None,
+) -> None:
+    if events_path is None:
+        events_path = data_dir / "runs" / run_id / "events.jsonl"
     with events_path.open("r+", encoding="utf-8") as events_file:
         fcntl.flock(events_file.fileno(), fcntl.LOCK_EX)
         lines = events_file.read().splitlines()
